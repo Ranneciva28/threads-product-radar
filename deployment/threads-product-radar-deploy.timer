@@ -1,0 +1,13 @@
+[Unit]
+Description=Check GitHub for Threads Product Radar updates
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+Unit=threads-product-radar-deploy.service
+
+[Install]
+WantedBy=timers.target
+

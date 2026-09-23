@@ -1,4 +1,4 @@
-name: Test and Deploy
+name: Test
 
 on:
   push:
@@ -7,10 +7,6 @@ on:
 
 permissions:
   contents: read
-
-concurrency:
-  group: threads-product-radar-production
-  cancel-in-progress: false
 
 jobs:
   test:
@@ -32,50 +28,3 @@ jobs:
         run: |
           pytest -q
           python scripts/smoke_test.py
-
-  deploy:
-    needs: test
-    if: ${{ vars.AUTO_DEPLOY_ENABLED == 'true' }}
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - name: Prepare SSH
-        shell: bash
-        run: |
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "${{ secrets.VPS_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          printf '%s\n' "${{ secrets.VPS_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-
-      - name: Deploy and verify
-        shell: bash
-        env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_PORT: ${{ secrets.VPS_PORT }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_APP_PATH: ${{ vars.VPS_APP_PATH }}
-        run: |
-          APP_PATH="${VPS_APP_PATH:-/opt/threads-product-radar}"
-          PORT="${VPS_PORT:-22}"
-          ssh -i ~/.ssh/id_ed25519 -p "$PORT" "$VPS_USER@$VPS_HOST" \
-            "APP_PATH='$APP_PATH' bash -s" <<'REMOTE'
-          set -euo pipefail
-          cd "$APP_PATH"
-          git fetch origin main
-          git checkout main
-          git pull --ff-only origin main
-          docker compose build --pull
-          docker compose up -d --remove-orphans
-
-          for attempt in $(seq 1 12); do
-            if curl --fail --silent http://127.0.0.1:8501/_stcore/health >/dev/null; then
-              echo "Deployment healthy"
-              exit 0
-            fi
-            sleep 5
-          done
-
-          docker compose logs --tail=120
-          exit 1
-          REMOTE

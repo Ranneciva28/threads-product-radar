@@ -195,6 +195,38 @@ Cloudflare bersifat opsional. Jika dipakai, gunakan SSL mode Full (strict).
 | Nginx 502 | Status service dan bind `127.0.0.1:8501` |
 | WebSocket disconnect | Header Upgrade/Connection di Nginx config |
 
+## 16. Automatic deployment from GitHub
+
+The production VPS can poll the public `main` branch every minute. When it sees
+a new fast-forward commit, it rebuilds the Docker image, restarts the service,
+and checks Streamlit health on `127.0.0.1:8501`.
+
+One-time server setup after cloning the repository to
+`/opt/threads-product-radar`:
+
+```bash
+cd /opt/threads-product-radar
+chmod +x deployment/auto-deploy.sh
+cp deployment/threads-product-radar-deploy.service /etc/systemd/system/
+cp deployment/threads-product-radar-deploy.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now threads-product-radar-deploy.timer
+systemctl list-timers threads-product-radar-deploy.timer
+```
+
+Normal developer flow:
+
+```bash
+git pull --ff-only origin main
+# make and test changes
+git add .
+git commit -m "Describe the change"
+git push origin main
+```
+
+GitHub runs the automated test workflow on every push. The VPS deploys only
+fast-forward updates, preventing server-side edits from being overwritten.
+
 ## Structure
 
 ```text
@@ -213,4 +245,3 @@ threads-product-radar/
 ├── scripts/
 └── tests/
 ```
-
