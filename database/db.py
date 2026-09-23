@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Iterable, Iterator
+
+import pandas as pd
+
+from config.settings import settings
+from database.schema import SCHEMA_SQL
+
+
+POST_COLUMNS = [
+    "post_id", "username", "display_name", "post_text", "post_text_normalized",
+    "created_at", "permalink", "like_count", "reply_count", "repost_count",
+    "quote_count", "views", "keyword_source", "search_type", "language",
+    "crawl_timestamp", "data_source", "is_digital_product", "product_category",
+    "product_subcategory", "classification_confidence", "buying_intent_count",
+    "buying_intent_score", "buying_intent_status", "buying_intent_examples",
+]
+
+
+class Database:
+    def __init__(self, path: Path | str | None = None) -> None:
+        self.path = Path(path or settings.database_path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(self.path, timeout=15)
+        connection.row_factory = sqlite3.Row
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def initialize(self) -> None:
+        with self.connect() as connection:
+            connection.executescript(SCHEMA_SQL)
+
+    def insert_posts(self, rows: Iterable[dict]) -> int:
+        rows = list(rows)
+        if not rows:
+            return 0
+        placeholders = ",".join("?" for _ in POST_COLUMNS)
+        columns = ",".join(POST_COLUMNS)
+        before = self.count_posts()
+        with self.connect() as connection:
+            connection.executemany(
+                f"INSERT OR IGNORE INTO posts ({columns}) VALUES ({placeholders})",
+                [tuple(row.get(column) for column in POST_COLUMNS) for row in rows],
+            )
+        return self.count_posts() - before
+
+    def count_posts(self) -> int:
+        with self.connect() as connection:
+            return int(connection.execute("SELECT COUNT(*) FROM posts").fetchone()[0])
+
+    def get_posts(self, data_source: str | None = None) -> list[dict]:
+        query = "SELECT * FROM posts"
+        params: tuple = ()
+        if data_source:
+            query += " WHERE data_source = ?"
+            params = (data_source,)
+        query += " ORDER BY created_at DESC"
+        with self.connect() as connection:
+            return [dict(row) for row in connection.execute(query, params).fetchall()]
+
+    def add_keyword(self, keyword: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO keywords(keyword) VALUES (?) ON CONFLICT(keyword) DO UPDATE SET active=1",
+                (keyword.strip().lower(),),
+            )
+
+    def get_keywords(self) -> list[str]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT keyword FROM keywords WHERE active=1 ORDER BY keyword"
+            ).fetchall()
+        return [row[0] for row in rows]
+
+    def log_search_run(
+        self, keyword: str, search_type: str, start_date: str, end_date: str,
+        status: str, post_count: int = 0, error_message: str | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO search_runs
+                (keyword, search_type, start_date, end_date, started_at, completed_at,
+                 status, post_count, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (keyword, search_type, start_date, end_date, now, now, status, post_count, error_message),
+            )
+
+    def status(self) -> dict:
+        with self.connect() as connection:
+            post_count = connection.execute("SELECT COUNT(*) FROM posts").fetchone()[0]
+            last_crawl = connection.execute("SELECT MAX(crawl_timestamp) FROM posts").fetchone()[0]
+            last_run = connection.execute("SELECT MAX(completed_at) FROM search_runs").fetchone()[0]
+        return {
+            "path": str(self.path),
+            "post_count": int(post_count),
+            "last_collection": last_run or last_crawl,
+        }
+
+    def dataframe(self, data_source: str | None = None) -> pd.DataFrame:
+        return pd.DataFrame(self.get_posts(data_source=data_source))
+

@@ -1,0 +1,19 @@
+[Unit]
+Description=Threads Product Radar Streamlit App
+After=network.target
+
+[Service]
+Type=simple
+User=radar
+Group=radar
+WorkingDirectory=/opt/threads-product-radar
+EnvironmentFile=/opt/threads-product-radar/.env
+ExecStart=/opt/threads-product-radar/.venv/bin/streamlit run app.py --server.address=127.0.0.1 --server.port=8501
+Restart=always
+RestartSec=5
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+
