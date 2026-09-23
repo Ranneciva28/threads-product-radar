@@ -227,6 +227,22 @@ git push origin main
 GitHub runs the automated test workflow on every push. The VPS deploys only
 fast-forward updates, preventing server-side edits from being overwritten.
 
+### One-command VPS bootstrap
+
+On the production VPS, clone the repository and run the interactive bootstrap:
+
+```bash
+cd /opt
+git clone https://github.com/Ranneciva28/threads-product-radar.git
+cd /opt/threads-product-radar
+chmod +x deployment/bootstrap-vps.sh
+./deployment/bootstrap-vps.sh
+```
+
+The bootstrap preserves an existing `.env`, refuses to overwrite a non-Git
+application directory, checks port `8501`, and does not modify ports `80/443`,
+CyberPanel, OpenLiteSpeed, Traefik, MariaDB, or other hosted sites.
+
 ## Structure
 
 ```text
