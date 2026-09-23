@@ -43,6 +43,49 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA_SQL)
+        try:
+            self.path.chmod(0o600)
+        except OSError:
+            pass
+
+    def seed_app_settings(
+        self, values: dict[str, str], secret_keys: set[str] | None = None
+    ) -> None:
+        """Insert defaults without overwriting values already saved from the UI."""
+        secret_keys = secret_keys or set()
+        with self.connect() as connection:
+            connection.executemany(
+                "INSERT OR IGNORE INTO app_settings(key, value, is_secret) VALUES (?, ?, ?)",
+                [
+                    (key, str(value), int(key in secret_keys))
+                    for key, value in values.items()
+                ],
+            )
+
+    def get_app_settings(self) -> dict[str, str]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT key, value FROM app_settings ORDER BY key"
+            ).fetchall()
+        return {str(row["key"]): str(row["value"]) for row in rows}
+
+    def save_app_settings(
+        self, values: dict[str, str], secret_keys: set[str] | None = None
+    ) -> None:
+        secret_keys = secret_keys or set()
+        with self.connect() as connection:
+            connection.executemany(
+                """INSERT INTO app_settings(key, value, is_secret, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value,
+                    is_secret=excluded.is_secret,
+                    updated_at=CURRENT_TIMESTAMP""",
+                [
+                    (key, str(value), int(key in secret_keys))
+                    for key, value in values.items()
+                ],
+            )
 
     def insert_posts(self, rows: Iterable[dict]) -> int:
         rows = list(rows)
@@ -112,4 +155,3 @@ class Database:
 
     def dataframe(self, data_source: str | None = None) -> pd.DataFrame:
         return pd.DataFrame(self.get_posts(data_source=data_source))
-

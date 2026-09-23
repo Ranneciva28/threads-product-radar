@@ -68,20 +68,12 @@ if [[ ! -f "$APP_DIR/.env" ]]; then
     echo "Password is too short."
   done
 
-  read -r -s -p "Threads access token (optional for demo mode): " THREADS_TOKEN_INPUT
-  echo
-
   umask 077
   {
     printf 'APP_ENV=production\n'
     printf 'APP_USERNAME=%s\n' "$APP_USERNAME_INPUT"
     printf 'APP_PASSWORD=%s\n' "$APP_PASSWORD_INPUT"
-    printf 'THREADS_ACCESS_TOKEN=%s\n' "$THREADS_TOKEN_INPUT"
-    printf 'THREADS_API_BASE_URL=https://graph.threads.net/v1.0\n'
-    printf 'THREADS_SEARCH_ENDPOINT=/keyword_search\n'
     printf 'DATABASE_PATH=data/threads_product_radar.db\n'
-    printf 'DEFAULT_DATE_DAYS=30\n'
-    printf 'MAX_POSTS=250\n'
     printf 'LOG_LEVEL=INFO\n'
   } > "$APP_DIR/.env"
   chown "$APP_USER:$APP_GROUP" "$APP_DIR/.env"

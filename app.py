@@ -5,6 +5,7 @@ import hmac
 import logging
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pandas as pd
 import plotly.express as px
@@ -20,6 +21,7 @@ from analytics.product_analytics import (
 from analytics.filters import filter_posts
 from collectors.base_collector import CollectionRequest, CollectorError
 from collectors.threads_collector import ThreadsOfficialCollector
+from config.runtime_config import RuntimeConfig, SECRET_SETTING_KEYS
 from config.settings import ROOT, settings
 from data.demo_data import generate_demo_posts
 from database.db import Database
@@ -42,6 +44,7 @@ st.set_page_config(
 MENU = [
     "Overview", "Product Ranking", "Top Threads", "Product Categories",
     "Winning Hooks", "Buying Intent", "Creators", "Keywords", "Dataset", "Settings",
+    "API Configuration",
 ]
 
 
@@ -115,6 +118,9 @@ def get_database(mode: str) -> Database:
     path = ROOT / "data/demo_threads_radar.db" if mode == "DEMO" else settings.database_path
     db = Database(path)
     db.initialize()
+    if mode == "LIVE":
+        legacy = RuntimeConfig.legacy_defaults()
+        db.seed_app_settings(legacy.as_storage(), SECRET_SETTING_KEYS)
     if mode == "DEMO" and db.count_posts() == 0:
         db.insert_posts(process_posts(generate_demo_posts()))
     return db
@@ -143,14 +149,14 @@ def format_number(value: float | int) -> str:
     return f"{value:,.0f}".replace(",", ".")
 
 
-def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
+def apply_filters(df: pd.DataFrame, default_date_days: int = 30) -> pd.DataFrame:
     if df.empty:
         return df
     work = df.copy()
     work["created_at_dt"] = pd.to_datetime(work["created_at"], errors="coerce", utc=True)
     valid_dates = work["created_at_dt"].dropna()
     fallback_end = date.today()
-    fallback_start = fallback_end - timedelta(days=settings.default_date_days)
+    fallback_start = fallback_end - timedelta(days=default_date_days)
     min_date = valid_dates.min().date() if not valid_dates.empty else fallback_start
     max_date = valid_dates.max().date() if not valid_dates.empty else fallback_end
 
@@ -349,37 +355,165 @@ def dataset_page(df: pd.DataFrame, demo: bool) -> None:
     c2.download_button("Download Excel", excel, "threads_product_radar.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
 
 
-def settings_page(mode: str, demo: bool) -> None:
+def build_threads_collector(runtime: RuntimeConfig) -> ThreadsOfficialCollector:
+    return ThreadsOfficialCollector(
+        token=runtime.threads_access_token,
+        base_url=runtime.threads_api_base_url,
+        search_endpoint=runtime.threads_search_endpoint,
+        max_posts=runtime.max_posts,
+        timeout_seconds=runtime.request_timeout_seconds,
+    )
+
+
+def api_configuration_page(runtime: RuntimeConfig) -> None:
+    page_header(
+        "API Configuration",
+        "Atur credential dan perilaku Threads API langsung dari dashboard. Perubahan tersimpan di database live dan aktif pada request berikutnya.",
+        False,
+    )
+    db = get_database("LIVE")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Threads API", "Configured" if runtime.api_configured else "Not configured")
+    c2.metric("Token", "Saved securely" if runtime.api_configured else "Not set")
+    c3.metric("Max posts / run", runtime.max_posts)
+    c4.metric("Request timeout", f"{runtime.request_timeout_seconds}s")
+    st.caption("Secret disimpan di SQLite server dan tidak pernah ditampilkan kembali di browser atau log.")
+
+    st.subheader("Connection & collection defaults")
+    with st.form("api_configuration_form"):
+        token = st.text_input(
+            "Threads access token",
+            value="",
+            type="password",
+            placeholder="Kosongkan untuk mempertahankan token saat ini",
+            help="Token baru hanya dikirim saat form disimpan. Nilai lama tidak dimuat kembali ke browser.",
+        )
+        clear_token = st.checkbox("Hapus token yang tersimpan")
+        base_url = st.text_input("API base URL", value=runtime.threads_api_base_url)
+        endpoint = st.text_input(
+            "Keyword search endpoint", value=runtime.threads_search_endpoint
+        )
+        c1, c2, c3 = st.columns(3)
+        max_posts = c1.number_input(
+            "Maximum posts / run", min_value=1, max_value=1000,
+            value=runtime.max_posts, step=10,
+        )
+        default_days = c2.number_input(
+            "Default date window (days)", min_value=1, max_value=365,
+            value=runtime.default_date_days,
+        )
+        timeout = c3.number_input(
+            "Request timeout (seconds)", min_value=5, max_value=120,
+            value=runtime.request_timeout_seconds,
+        )
+        c1, c2 = st.columns(2)
+        search_options = ["RECENT", "TOP"]
+        current_search = (
+            runtime.default_search_type
+            if runtime.default_search_type in search_options
+            else "RECENT"
+        )
+        default_search = c1.selectbox(
+            "Default search type", search_options,
+            index=search_options.index(current_search),
+        )
+        language = c2.text_input(
+            "Default language", value=runtime.default_language,
+            help="Contoh: id, en, ms",
+        )
+        saved = st.form_submit_button("Save API configuration", type="primary")
+
+    if saved:
+        normalized_url = base_url.strip().rstrip("/")
+        parsed_url = urlparse(normalized_url)
+        normalized_endpoint = endpoint.strip()
+        if normalized_endpoint and not normalized_endpoint.startswith("/"):
+            normalized_endpoint = f"/{normalized_endpoint}"
+        errors = []
+        if parsed_url.scheme != "https" or not parsed_url.netloc:
+            errors.append("API base URL wajib berupa URL HTTPS yang valid.")
+        if not normalized_endpoint or " " in normalized_endpoint:
+            errors.append("Keyword search endpoint wajib berupa path valid tanpa spasi.")
+        if not language.strip():
+            errors.append("Default language tidak boleh kosong.")
+        if clear_token and token.strip():
+            errors.append("Pilih salah satu: isi token baru atau hapus token.")
+        if errors:
+            for error in errors:
+                st.error(error)
+        else:
+            final_token = "" if clear_token else (token.strip() or runtime.threads_access_token)
+            updated = RuntimeConfig(
+                threads_access_token=final_token,
+                threads_api_base_url=normalized_url,
+                threads_search_endpoint=normalized_endpoint,
+                max_posts=int(max_posts),
+                default_date_days=int(default_days),
+                request_timeout_seconds=int(timeout),
+                default_language=language.strip().lower(),
+                default_search_type=default_search,
+            )
+            db.save_app_settings(updated.as_storage(), SECRET_SETTING_KEYS)
+            st.success("Konfigurasi tersimpan. Nilai baru aktif pada request berikutnya.")
+
+    st.subheader("Test saved configuration")
+    with st.form("api_test_form"):
+        test_keyword = st.text_input("Test keyword", value="template digital")
+        test = st.form_submit_button("Test Threads API")
+    if test:
+        latest = RuntimeConfig.from_mapping(db.get_app_settings())
+        if not latest.api_configured:
+            st.error("Simpan Threads access token terlebih dahulu.")
+        elif not test_keyword.strip():
+            st.error("Test keyword wajib diisi.")
+        else:
+            today = date.today()
+            try:
+                rows = build_threads_collector(latest).collect(
+                    CollectionRequest(
+                        test_keyword.strip(), today - timedelta(days=1), today,
+                        latest.default_search_type, 1, latest.default_language,
+                    )
+                )
+                st.success(f"Threads API berhasil diakses. Respons berisi {len(rows)} post.")
+            except CollectorError as exc:
+                st.error(str(exc))
+
+
+def settings_page(mode: str, demo: bool, runtime: RuntimeConfig) -> None:
     page_header("Settings", "Kelola collection, keyword, serta status API dan database tanpa menampilkan credential.", demo)
     db = get_database("LIVE")
     status = db.status()
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Threads API", "Configured" if settings.api_configured else "Not configured")
+    c1.metric("Threads API", "Configured" if runtime.api_configured else "Not configured")
     c2.metric("Live database", "Ready")
     c3.metric("Live posts", status["post_count"])
-    c4.metric("Max posts / run", settings.max_posts)
-    st.caption(f"Last collection: {status['last_collection'] or 'Never'} · Token: {'••••••••' if settings.api_configured else 'Not set'}")
+    c4.metric("Max posts / run", runtime.max_posts)
+    st.caption(f"Last collection: {status['last_collection'] or 'Never'} · Token: {'••••••••' if runtime.api_configured else 'Not set'}")
 
     st.subheader("Run official collection")
     st.info("Ketersediaan keyword search, field engagement, dan reply text mengikuti izin aplikasi serta versi Threads API. Field yang tidak dikirim API tetap kosong.")
     with st.form("collection_form"):
         keyword = st.text_input("Keyword", placeholder="template excel")
-        dates = st.date_input("Date window", value=(date.today() - timedelta(days=30), date.today()))
+        dates = st.date_input("Date window", value=(date.today() - timedelta(days=runtime.default_date_days), date.today()))
         c1, c2, c3 = st.columns(3)
-        search_type = c1.selectbox("Search type", ["RECENT", "TOP"])
-        language = c2.selectbox("Target language", ["id", "en"])
-        limit = c3.number_input("Maximum posts", 1, settings.max_posts, min(100, settings.max_posts))
+        search_options = ["RECENT", "TOP"]
+        search_index = search_options.index(runtime.default_search_type) if runtime.default_search_type in search_options else 0
+        search_type = c1.selectbox("Search type", search_options, index=search_index)
+        language_options = list(dict.fromkeys([runtime.default_language, "id", "en"]))
+        language = c2.selectbox("Target language", language_options)
+        limit = c3.number_input("Maximum posts", 1, runtime.max_posts, min(100, runtime.max_posts))
         run = st.form_submit_button("Collect & process", type="primary")
     if run:
         if not keyword.strip():
             st.error("Keyword wajib diisi.")
-        elif not settings.api_configured:
-            st.error("Set THREADS_ACCESS_TOKEN di file .env terlebih dahulu.")
+        elif not runtime.api_configured:
+            st.error("Buka API Configuration lalu simpan Threads access token terlebih dahulu.")
         else:
             start, end = dates if isinstance(dates, tuple) else (dates, dates)
             try:
                 request = CollectionRequest(keyword.strip(), start, end, search_type, int(limit), language)
-                raw = ThreadsOfficialCollector().collect(request)
+                raw = build_threads_collector(runtime).collect(request)
                 processed = process_posts(raw)
                 inserted = db.insert_posts(processed)
                 db.add_keyword(keyword)
@@ -418,9 +552,11 @@ with st.sidebar:
         st.rerun()
 
 db = get_database(mode)
+live_db = get_database("LIVE")
+runtime = RuntimeConfig.from_mapping(live_db.get_app_settings())
 cache_key = str(db.status().get("last_collection") or db.count_posts())
 data = load_scored_data(mode, cache_key)
-filtered = apply_filters(data) if menu != "Settings" else data
+filtered = apply_filters(data, runtime.default_date_days) if menu not in {"Settings", "API Configuration"} else data
 demo = mode == "DEMO"
 
 pages = {
@@ -435,6 +571,8 @@ pages = {
     "Dataset": dataset_page,
 }
 if menu == "Settings":
-    settings_page(mode, demo)
+    settings_page(mode, demo, runtime)
+elif menu == "API Configuration":
+    api_configuration_page(runtime)
 else:
     pages[menu](filtered, demo)

@@ -32,8 +32,19 @@ class ThreadsOfficialCollector(BaseCollector):
         "views": "views",
     }
 
-    def __init__(self, token: str | None = None) -> None:
+    def __init__(
+        self,
+        token: str | None = None,
+        base_url: str | None = None,
+        search_endpoint: str | None = None,
+        max_posts: int | None = None,
+        timeout_seconds: int = 30,
+    ) -> None:
         self.token = token or settings.threads_access_token
+        self.base_url = (base_url or settings.threads_api_base_url).rstrip("/")
+        self.search_endpoint = search_endpoint or settings.threads_search_endpoint
+        self.max_posts = max_posts or settings.max_posts
+        self.timeout_seconds = timeout_seconds
 
     def collect(self, request: CollectionRequest) -> list[dict[str, Any]]:
         if not self.token:
@@ -41,16 +52,16 @@ class ThreadsOfficialCollector(BaseCollector):
         if request.start_date > request.end_date:
             raise CollectorError("Start date tidak boleh melewati end date.")
 
-        url = f"{settings.threads_api_base_url}{settings.threads_search_endpoint}"
+        url = f"{self.base_url}{self.search_endpoint}"
         params = {
             "q": request.keyword,
             "search_type": request.search_type.upper(),
-            "limit": min(max(request.limit, 1), settings.max_posts),
+            "limit": min(max(request.limit, 1), self.max_posts),
             "fields": ",".join(self.FIELD_MAP),
             "access_token": self.token,
         }
         try:
-            response = requests.get(url, params=params, timeout=30)
+            response = requests.get(url, params=params, timeout=self.timeout_seconds)
             response.raise_for_status()
             payload = response.json()
         except requests.RequestException as exc:

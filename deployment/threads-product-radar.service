@@ -10,6 +10,7 @@ Group=@APP_GROUP@
 WorkingDirectory=@APP_DIR@
 EnvironmentFile=@APP_DIR@/.env
 Environment=PYTHONUNBUFFERED=1
+UMask=0077
 ExecStart=@APP_DIR@/.venv/bin/streamlit run app.py --server.headless=true --server.address=127.0.0.1 --server.port=8501
 Restart=always
 RestartSec=5

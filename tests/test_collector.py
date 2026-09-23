@@ -34,3 +34,28 @@ def test_api_error_is_wrapped(monkeypatch):
     with pytest.raises(CollectorError):
         ThreadsOfficialCollector("token").collect(request())
 
+
+def test_runtime_api_settings_are_used(monkeypatch):
+    captured = {}
+
+    def fake_get(url, params, timeout):
+        captured.update(url=url, params=params, timeout=timeout)
+        return FakeResponse({"data": []})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    collector = ThreadsOfficialCollector(
+        token="token",
+        base_url="https://example.test/v9/",
+        search_endpoint="/search",
+        max_posts=7,
+        timeout_seconds=12,
+    )
+    today = date.today()
+    collection_request = CollectionRequest(
+        "template excel", today, today, limit=99
+    )
+    collector.collect(collection_request)
+
+    assert captured["url"] == "https://example.test/v9/search"
+    assert captured["params"]["limit"] == 7
+    assert captured["timeout"] == 12

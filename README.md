@@ -4,7 +4,7 @@ Internal Streamlit dashboard untuk meriset produk digital yang mendapat engageme
 
 ## Status MVP
 
-- Dashboard 10 menu dengan filter global.
+- Dashboard 11 menu dengan filter global dan konfigurasi API dari UI.
 - Collector resmi Threads yang modular dan configurable.
 - Cleaning, deduplication, rule-based product classification, hook pattern, CTA pattern, dan buying-intent detection.
 - Product Opportunity Score 0–100 beserta breakdown.
@@ -27,7 +27,7 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env`, terutama login dashboard dan credential Threads. Jangan commit `.env`.
+Edit `.env` hanya untuk login dashboard, lokasi database, dan logging. Jangan commit `.env`.
 
 ## 2. Running locally
 
@@ -60,13 +60,15 @@ Jangan menghapus seluruh direktori `data`. Database akan dibuat ulang saat app d
 
 ## 4. Threads API configuration
 
-Isi:
+Login ke dashboard lalu buka **API Configuration**. Dari menu ini Anda dapat
+menyimpan access token, base URL, keyword-search endpoint, batas post, rentang
+tanggal default, timeout, bahasa, dan search type. Nilai tersimpan di tabel
+`app_settings` pada database live dan langsung digunakan pada request berikutnya.
+Token dimasking dan tidak pernah dimuat kembali ke browser.
+File database dibuat dengan permission owner-only pada deployment native.
 
-```dotenv
-THREADS_ACCESS_TOKEN=your-token
-THREADS_API_BASE_URL=https://graph.threads.net/v1.0
-THREADS_SEARCH_ENDPOINT=/keyword_search
-```
+Instalasi lama yang masih memiliki setting Threads di `.env` akan dimigrasikan
+otomatis sekali ke SQLite tanpa menimpa nilai yang sudah disimpan melalui UI.
 
 Meta menambahkan public-post keyword search pada Threads API pada 2025. Ketersediaan endpoint, field, search type, dan reply text tetap bergantung pada versi API, izin aplikasi, app review, serta perubahan kebijakan Meta. Karena itu base URL dan endpoint dibuat configurable.
 
@@ -105,7 +107,7 @@ Rules berada di `processors/classifier.py`. Tambahkan rule sebelum kategori yang
 
 ## 8. Keyword management
 
-Buka **Settings → Keyword management**, masukkan keyword, lalu Save. Keyword tersimpan di tabel `keywords`. Untuk menjalankan collection, isi form di bagian **Run official collection**.
+Buka **API Configuration** untuk menyimpan Threads access token, base URL, endpoint, timeout, batas post, bahasa, dan default pencarian langsung dari dashboard. Token tidak pernah ditampilkan kembali. Setelah itu buka **Settings → Keyword management**, masukkan keyword, lalu Save. Keyword tersimpan di tabel `keywords`. Untuk menjalankan collection, isi form di bagian **Run official collection**.
 
 ## 9. Export
 
@@ -188,7 +190,7 @@ Keduanya harus menghasilkan `ok`.
 
 | Symptom | Check |
 |---|---|
-| API “not configured” | `THREADS_ACCESS_TOKEN` terisi dan service direstart |
+| API “not configured” | Buka **API Configuration**, simpan token, lalu gunakan tombol test |
 | API permission/error | App review, token scope/expiry, base URL, endpoint, dan versi API |
 | Dashboard kosong | Data source LIVE vs DEMO dan filter global |
 | Intent unavailable | API tidak menyediakan reply text; ini perilaku yang benar |

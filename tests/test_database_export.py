@@ -16,9 +16,27 @@ def test_database_initialization_and_duplicate_handling(tmp_path: Path):
     assert db.count_posts() == 3
 
 
+def test_app_settings_are_seeded_and_updated(tmp_path: Path):
+    db = Database(tmp_path / "radar.db")
+    db.initialize()
+    db.seed_app_settings(
+        {"threads_access_token": "old-token", "max_posts": "250"},
+        {"threads_access_token"},
+    )
+    db.seed_app_settings({"threads_access_token": "must-not-overwrite"})
+    db.save_app_settings(
+        {"threads_access_token": "new-token", "max_posts": "100"},
+        {"threads_access_token"},
+    )
+
+    assert db.get_app_settings() == {
+        "max_posts": "100",
+        "threads_access_token": "new-token",
+    }
+
+
 def test_excel_export_has_content():
     frame = score_posts(process_posts(generate_demo_posts()))
     payload = build_excel(frame)
     assert payload[:2] == b"PK"
     assert len(payload) > 5000
-
