@@ -10,7 +10,7 @@ Internal Streamlit dashboard untuk meriset produk digital yang mendapat engageme
 - Product Opportunity Score 0–100 beserta breakdown.
 - SQLite terpisah untuk demo dan live data.
 - Ekspor CSV dan workbook Excel tujuh sheet.
-- Basic login, secret dari environment, logging, Docker, systemd, Nginx, SSL guide, dan tests.
+- Basic login, secret dari environment, logging, native systemd deployment, CyberPanel/OpenLiteSpeed guide, dan tests.
 
 > Demo data selalu berlabel **DEMO DATA** dan disimpan di `data/demo_threads_radar.db`. Data live memakai database berbeda yang ditentukan oleh `DATABASE_PATH`.
 
@@ -123,61 +123,62 @@ python scripts/smoke_test.py
 
 Cakupan MVP: database initialization, duplicate handling, empty API response, API error, missing engagement values, classifier, buying-intent availability, scoring, filter, dan Excel export.
 
-## 11. Docker deployment
+## 11. Production deployment: CyberPanel + systemd
+
+Production tidak menggunakan Docker. Repository berada di
+`/home/threads.avicennarabama.com/threads-product-radar`, dimiliki oleh user
+website CyberPanel, dan aplikasi berjalan sebagai service `systemd` pada
+`127.0.0.1:8501`.
+
+Pastikan website `threads.avicennarabama.com` sudah dibuat di CyberPanel, lalu
+jalankan bootstrap dari clone sementara:
 
 ```bash
-cp .env.example .env
-# set APP_ENV=production, login kuat, token, dan database path
-docker compose up -d --build
-docker compose ps
+cd /opt/threads-product-radar
+git pull --ff-only origin main
+chmod +x deployment/bootstrap-vps.sh
+./deployment/bootstrap-vps.sh
 ```
 
-Service hanya dipublish ke `127.0.0.1:8501`, sehingga tidak terekspos langsung ke internet. Nginx menjadi public entry point.
+Bootstrap akan mendeteksi user website dari ownership `public_html`, membuat
+virtual environment Python, memasang dependency, membuat `.env`, memasang
+service aplikasi dan timer auto-deploy, lalu menjalankan health check.
 
-## 12. Ubuntu + systemd deployment
+Gunakan perintah berikut untuk status dan log:
 
 ```bash
-sudo adduser --system --group --home /opt/threads-product-radar radar
-sudo rsync -a ./ /opt/threads-product-radar/
-sudo chown -R radar:radar /opt/threads-product-radar
-sudo -u radar python3 -m venv /opt/threads-product-radar/.venv
-sudo -u radar /opt/threads-product-radar/.venv/bin/pip install -r /opt/threads-product-radar/requirements.txt
-sudo cp deployment/threads-product-radar.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now threads-product-radar
+systemctl status threads-product-radar.service --no-pager
+journalctl -u threads-product-radar.service -n 100 --no-pager
+systemctl list-timers threads-product-radar-deploy.timer
 ```
 
-Gunakan `systemctl status threads-product-radar` dan `journalctl -u threads-product-radar` untuk status/log.
+## 12. OpenLiteSpeed, domain, dan SSL
 
-## 13. Nginx, domain, SSL
+Di OpenLiteSpeed WebAdmin, pada virtual host `threads.avicennarabama.com`:
 
-1. Arahkan DNS `radar.example.com` ke IP VPS. Ganti placeholder hanya setelah domain final tersedia.
-2. Copy `deployment/nginx.conf` ke `/etc/nginx/sites-available/threads-product-radar`.
-3. Aktifkan dan uji:
+1. Buat External App tipe `Web Server` bernama `threads_radar` dengan address
+   `127.0.0.1:8501`.
+2. Buat Proxy Context dengan URI `/` menuju `threads_radar`.
+3. Buat WebSocket Proxy dengan URI `/_stcore/stream` dan address
+   `127.0.0.1:8501`.
+4. Lakukan graceful restart OpenLiteSpeed.
+5. Issue SSL untuk domain melalui CyberPanel.
+
+Verifikasi:
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/threads-product-radar /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl reload nginx
+curl -fsS http://127.0.0.1:8501/_stcore/health
+curl -fsS https://threads.avicennarabama.com/_stcore/health
 ```
 
-4. Install SSL:
-
-```bash
-sudo apt install certbot python3-certbot-nginx
-sudo certbot --nginx -d radar.example.com
-sudo certbot renew --dry-run
-```
-
-Cloudflare bersifat opsional. Jika dipakai, gunakan SSL mode Full (strict).
+Keduanya harus menghasilkan `ok`.
 
 ## 14. Security, firewall, backup, logging
 
 - Gunakan password panjang dan unik; credential hanya di `.env` dengan permission `600`.
 - App bind ke localhost; jangan expose port 8501 melalui firewall.
-- UFW: izinkan OpenSSH dan `Nginx Full`, lalu enable.
-- Database serta `.env` berada di luar document root Nginx.
-- Tambahkan Nginx rate limit bila dashboard dibuka ke banyak user.
+- UFW: izinkan OpenSSH dan port web milik OpenLiteSpeed; port `8501` tetap lokal.
+- Database serta `.env` berada di luar `public_html`.
 - Backup harian aman dengan SQLite Online Backup API atau `sqlite3 ... '.backup ...'`, lalu simpan terenkripsi/offsite.
 - Retensi contoh: 7 backup harian, 4 mingguan, 6 bulanan; lakukan restore drill berkala.
 - Log aplikasi masuk ke systemd journal; gunakan `logrotate` bila dialihkan ke file.
@@ -191,28 +192,15 @@ Cloudflare bersifat opsional. Jika dipakai, gunakan SSL mode Full (strict).
 | API permission/error | App review, token scope/expiry, base URL, endpoint, dan versi API |
 | Dashboard kosong | Data source LIVE vs DEMO dan filter global |
 | Intent unavailable | API tidak menyediakan reply text; ini perilaku yang benar |
-| Permission denied SQLite | Ownership direktori `data/` untuk user `radar` |
-| Nginx 502 | Status service dan bind `127.0.0.1:8501` |
-| WebSocket disconnect | Header Upgrade/Connection di Nginx config |
+| Permission denied SQLite | Ownership direktori `data/` harus sama dengan user website CyberPanel |
+| OpenLiteSpeed 503 | Status service dan bind `127.0.0.1:8501` |
+| WebSocket disconnect | WebSocket Proxy `/_stcore/stream` pada virtual host |
 
 ## 16. Automatic deployment from GitHub
 
-The production VPS can poll the public `main` branch every minute. When it sees
-a new fast-forward commit, it rebuilds the Docker image, restarts the service,
-and checks Streamlit health on `127.0.0.1:8501`.
-
-One-time server setup after cloning the repository to
-`/opt/threads-product-radar`:
-
-```bash
-cd /opt/threads-product-radar
-chmod +x deployment/auto-deploy.sh
-cp deployment/threads-product-radar-deploy.service /etc/systemd/system/
-cp deployment/threads-product-radar-deploy.timer /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now threads-product-radar-deploy.timer
-systemctl list-timers threads-product-radar-deploy.timer
-```
+The production VPS polls the public `main` branch every minute. When it sees a
+new fast-forward commit, it installs changed Python dependencies, restarts the
+native Streamlit service, and checks health on `127.0.0.1:8501`.
 
 Normal developer flow:
 
@@ -225,23 +213,9 @@ git push origin main
 ```
 
 GitHub runs the automated test workflow on every push. The VPS deploys only
-fast-forward updates, preventing server-side edits from being overwritten.
-
-### One-command VPS bootstrap
-
-On the production VPS, clone the repository and run the interactive bootstrap:
-
-```bash
-cd /opt
-git clone https://github.com/Ranneciva28/threads-product-radar.git
-cd /opt/threads-product-radar
-chmod +x deployment/bootstrap-vps.sh
-./deployment/bootstrap-vps.sh
-```
-
-The bootstrap preserves an existing `.env`, refuses to overwrite a non-Git
-application directory, checks port `8501`, and does not modify ports `80/443`,
-CyberPanel, OpenLiteSpeed, Traefik, MariaDB, or other hosted sites.
+fast-forward updates and stops when tracked server files have local changes.
+The bootstrap preserves `.env` and does not alter ports `80/443`, other virtual
+hosts, MariaDB, or other hosted sites.
 
 ## Structure
 

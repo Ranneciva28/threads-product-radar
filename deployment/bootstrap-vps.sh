@@ -1,44 +1,61 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="/opt/threads-product-radar"
-REPOSITORY_URL="https://github.com/Ranneciva28/threads-product-radar.git"
-HEALTH_URL="http://127.0.0.1:8501/_stcore/health"
+DOMAIN="${DOMAIN:-threads.avicennarabama.com}"
+SITE_ROOT="${SITE_ROOT:-/home/$DOMAIN}"
+PUBLIC_HTML="$SITE_ROOT/public_html"
+APP_DIR="${APP_DIR:-$SITE_ROOT/threads-product-radar}"
+REPOSITORY_URL="${REPOSITORY_URL:-https://github.com/Ranneciva28/threads-product-radar.git}"
+BRANCH="${BRANCH:-main}"
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8501/_stcore/health}"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run this bootstrap as root." >&2
   exit 1
 fi
 
-for command in git docker curl flock systemctl; do
+for command in git curl flock systemctl python3 sudo stat sed ss; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "Required command is missing: $command" >&2
     exit 1
   fi
 done
 
-if ! docker compose version >/dev/null 2>&1; then
-  echo "Docker Compose plugin is not available." >&2
+if [[ ! -d "$PUBLIC_HTML" ]]; then
+  echo "CyberPanel website was not found at $PUBLIC_HTML." >&2
+  echo "Create $DOMAIN in CyberPanel first, then rerun this script." >&2
   exit 1
 fi
 
-systemctl enable --now docker
+APP_USER="$(stat -c '%U' "$PUBLIC_HTML")"
+APP_GROUP="$(stat -c '%G' "$PUBLIC_HTML")"
+
+if [[ "$APP_USER" == "root" || "$APP_USER" == "UNKNOWN" ]]; then
+  echo "Refusing to run the application as root. Check ownership of $PUBLIC_HTML." >&2
+  exit 1
+fi
+
+if ! python3 -m venv --help >/dev/null 2>&1; then
+  echo "python3-venv is required. Install it with: apt-get install -y python3-venv" >&2
+  exit 1
+fi
 
 if [[ -d "$APP_DIR/.git" ]]; then
-  cd "$APP_DIR"
-  git fetch origin main
-  git checkout main
-  git merge --ff-only origin/main
+  sudo -u "$APP_USER" -H git -C "$APP_DIR" fetch origin "$BRANCH"
+  sudo -u "$APP_USER" -H git -C "$APP_DIR" checkout "$BRANCH"
+  sudo -u "$APP_USER" -H git -C "$APP_DIR" merge --ff-only "origin/$BRANCH"
 else
   if [[ -e "$APP_DIR" ]]; then
     echo "$APP_DIR exists but is not a Git checkout. Stop and inspect it first." >&2
     exit 1
   fi
-  git clone --branch main --single-branch "$REPOSITORY_URL" "$APP_DIR"
-  cd "$APP_DIR"
+
+  install -d -o "$APP_USER" -g "$APP_GROUP" "$APP_DIR"
+  sudo -u "$APP_USER" -H git clone --branch "$BRANCH" --single-branch \
+    "$REPOSITORY_URL" "$APP_DIR"
 fi
 
-if [[ ! -f .env ]]; then
+if [[ ! -f "$APP_DIR/.env" ]]; then
   read -r -p "Dashboard username [admin]: " APP_USERNAME_INPUT
   APP_USERNAME_INPUT="${APP_USERNAME_INPUT:-admin}"
 
@@ -66,46 +83,67 @@ if [[ ! -f .env ]]; then
     printf 'DEFAULT_DATE_DAYS=30\n'
     printf 'MAX_POSTS=250\n'
     printf 'LOG_LEVEL=INFO\n'
-  } > .env
-  chmod 600 .env
+  } > "$APP_DIR/.env"
+  chown "$APP_USER:$APP_GROUP" "$APP_DIR/.env"
+  chmod 600 "$APP_DIR/.env"
 else
   echo "Existing .env preserved."
 fi
 
+install -d -o "$APP_USER" -g "$APP_GROUP" "$APP_DIR/data"
+
+if [[ ! -x "$APP_DIR/.venv/bin/python" ]]; then
+  sudo -u "$APP_USER" -H python3 -m venv "$APP_DIR/.venv"
+fi
+
+sudo -u "$APP_USER" -H "$APP_DIR/.venv/bin/python" -m pip install --upgrade pip
+sudo -u "$APP_USER" -H "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt"
+
 if ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:)8501$'; then
-  if ! curl --fail --silent "$HEALTH_URL" >/dev/null 2>&1; then
-    echo "Port 8501 is already occupied by another service." >&2
+  if ! systemctl is-active --quiet threads-product-radar.service; then
+    echo "Port 8501 is occupied by a service not managed by threads-product-radar.service." >&2
     exit 1
   fi
 fi
 
-mkdir -p data
-chmod +x deployment/auto-deploy.sh
+sed \
+  -e "s|@APP_USER@|$APP_USER|g" \
+  -e "s|@APP_GROUP@|$APP_GROUP|g" \
+  -e "s|@APP_DIR@|$APP_DIR|g" \
+  "$APP_DIR/deployment/threads-product-radar.service" \
+  > /etc/systemd/system/threads-product-radar.service
 
-docker compose build --pull
-docker compose up -d --remove-orphans
+sed \
+  -e "s|@APP_USER@|$APP_USER|g" \
+  -e "s|@APP_GROUP@|$APP_GROUP|g" \
+  -e "s|@APP_DIR@|$APP_DIR|g" \
+  "$APP_DIR/deployment/threads-product-radar-deploy.service" \
+  > /etc/systemd/system/threads-product-radar-deploy.service
 
-install -m 0644 deployment/threads-product-radar-deploy.service \
-  /etc/systemd/system/threads-product-radar-deploy.service
-install -m 0644 deployment/threads-product-radar-deploy.timer \
+install -m 0644 "$APP_DIR/deployment/threads-product-radar-deploy.timer" \
   /etc/systemd/system/threads-product-radar-deploy.timer
+chmod +x "$APP_DIR/deployment/auto-deploy.sh"
 
 systemctl daemon-reload
+systemctl enable threads-product-radar.service
+systemctl restart threads-product-radar.service
 systemctl enable --now threads-product-radar-deploy.timer
 
 for attempt in $(seq 1 12); do
   if curl --fail --silent "$HEALTH_URL" >/dev/null; then
     echo
-    echo "Threads Product Radar is healthy."
-    echo "Auto-deploy timer is active."
+    echo "Threads Product Radar is healthy without Docker."
+    echo "Application user: $APP_USER"
     echo "Application path: $APP_DIR"
-    echo "Internal URL: $HEALTH_URL"
+    echo "Internal URL: http://127.0.0.1:8501"
+    echo "Auto-deploy timer is active."
+    echo "Point the CyberPanel/OpenLiteSpeed vhost for $DOMAIN to 127.0.0.1:8501."
     exit 0
   fi
   sleep 5
 done
 
 echo "Application failed its health check." >&2
-docker compose logs --tail=120 >&2
+systemctl status threads-product-radar.service --no-pager >&2 || true
+journalctl -u threads-product-radar.service -n 120 --no-pager >&2 || true
 exit 1
-
