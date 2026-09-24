@@ -199,11 +199,16 @@ def overview_page(df: pd.DataFrame, demo: bool) -> None:
     ranking = category_ranking(df)
     top = ranking.iloc[0]
     cols = st.columns(5)
+    engagement_rows = df[pd.to_numeric(df.get("engagement_available"), errors="coerce").fillna(0).eq(1)]
+    avg_engagement = (
+        round(engagement_rows["total_engagement"].mean())
+        if not engagement_rows.empty else "N/A"
+    )
     metrics = [
         ("Posts analyzed", len(df)),
         ("Digital product posts", int(df["is_digital_product"].sum())),
         ("Product categories", df["product_category"].nunique()),
-        ("Average engagement", round(df["total_engagement"].mean())),
+        ("Average engagement", avg_engagement),
         ("Highest opportunity", top["product_category"]),
     ]
     for col, (label, value) in zip(cols, metrics):
@@ -245,12 +250,16 @@ def ranking_page(df: pd.DataFrame, demo: bool) -> None:
     components = pd.DataFrame({
         "Component": ["Engagement", "Buying intent", "Recency / growth", "Demand frequency", "Competition gap"],
         "Score": [subset["engagement_component"].mean(), subset["buying_intent_component"].mean(), subset["recency_growth_component"].mean(), subset["demand_frequency_component"].mean(), subset["competition_gap_component"].mean()],
-        "Weight": ["30%", "25%", "20%", "15%", "10%"],
+        "Weight": ["30% if available", "25%", "20%", "15%", "10%"],
     })
     left, right = st.columns([1, 1.35])
     with left:
         st.dataframe(components.round(2), hide_index=True, width="stretch")
-        st.caption("Score 0–100 dinormalisasi terhadap dataset aktif. Intent yang tidak tersedia bernilai 0 dan tetap ditandai UNAVAILABLE pada data mentah.")
+        st.caption(
+            "Score 0–100 dinormalisasi terhadap dataset aktif. Jika public keyword "
+            "search tidak menyediakan engagement counters, bobot engagement dikeluarkan "
+            "dan bobot komponen yang tersedia dinormalisasi ulang."
+        )
     with right:
         top = subset.nlargest(5, "opportunity_score")[["post_text", "username", "total_engagement", "opportunity_score"]]
         st.dataframe(top, hide_index=True, width="stretch")
@@ -270,7 +279,11 @@ def top_threads_page(df: pd.DataFrame, demo: bool) -> None:
     if df.empty: show_empty(); return
     top = df.sort_values("opportunity_score", ascending=False).copy()
     top.insert(0, "Rank", range(1, len(top) + 1))
-    columns = ["Rank", "username", "post_text", "product_category", "like_count", "reply_count", "repost_count", "quote_count", "total_engagement", "opportunity_score", "permalink"]
+    columns = [
+        "Rank", "username", "post_text", "product_category", "intent_type",
+        "intent_score", "buying_intent_score", "has_replies", "total_engagement",
+        "score_basis", "opportunity_score", "permalink",
+    ]
     st.dataframe(
         top[columns], hide_index=True, width="stretch", height=650,
         column_config={"permalink": st.column_config.LinkColumn("Permalink", display_text="Open ↗"), "post_text": st.column_config.TextColumn("Post Text", width="large")},
@@ -302,21 +315,55 @@ def hooks_page(df: pd.DataFrame, demo: bool) -> None:
 
 
 def buying_page(df: pd.DataFrame, demo: bool) -> None:
-    page_header("Buying Intent", "Pisahkan viralitas dari sinyal pembelian yang muncul di reply publik.", demo)
-    if df.empty: show_empty(); return
-    available = df[df["buying_intent_status"].isin(["AVAILABLE", "LIMITED_DATA"])]
-    coverage = len(available) / len(df) * 100 if len(df) else 0
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Posts with reply data", len(available))
-    c2.metric("Coverage", f"{coverage:.1f}%")
-    c3.metric("Intent mentions", format_number(pd.to_numeric(df["buying_intent_count"], errors="coerce").sum()))
-    grouped = df.groupby("product_category", as_index=False).agg(
-        buying_intent_score=("buying_intent_score", "mean"),
-        buying_intent_mentions=("buying_intent_count", "sum"),
+    page_header(
+        "Market Intent",
+        "Klasifikasikan demand, pain point, consideration, recommendation, supply, dan purchase signal dari teks post publik. Reply dipakai hanya jika tersedia.",
+        demo,
+    )
+    if df.empty:
+        show_empty(); return
+
+    intent_type = df.get("intent_type", pd.Series("NO_CLEAR_INTENT", index=df.index)).fillna("NO_CLEAR_INTENT")
+    demand_types = {
+        "PURCHASE_INTENT", "PRODUCT_SEARCH", "RECOMMENDATION_REQUEST", "CONSIDERATION"
+    }
+    classified = intent_type.ne("NO_CLEAR_INTENT")
+    demand = intent_type.isin(demand_types)
+    reply_checked = df.get(
+        "buying_intent_status", pd.Series("", index=df.index)
+    ).isin(["POST_AND_REPLIES", "REPLIES_CHECKED"])
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Posts classified", int(classified.sum()))
+    c2.metric("Demand-intent posts", int(demand.sum()))
+    c3.metric("Reply-enriched", int(reply_checked.sum()))
+    c4.metric(
+        "Avg demand score",
+        f"{pd.to_numeric(df.loc[demand, 'buying_intent_score'], errors='coerce').mean():.1f}"
+        if demand.any() else "0.0",
+    )
+
+    work = df.copy()
+    work["intent_type"] = intent_type
+    grouped = work.groupby("intent_type", as_index=False).agg(
+        post_count=("post_id", "count"),
+        average_intent_score=("intent_score", "mean"),
+        average_buying_score=("buying_intent_score", "mean"),
+        examples=("post_text", lambda x: " · ".join(v for v in x.dropna().astype(str).head(3))),
+    ).sort_values(["post_count", "average_intent_score"], ascending=[False, False])
+    st.dataframe(grouped.round(2), hide_index=True, width="stretch", height=430)
+
+    st.subheader("Demand signals by product category")
+    demand_grouped = work[demand].groupby("product_category", as_index=False).agg(
+        demand_posts=("post_id", "count"),
+        average_buying_score=("buying_intent_score", "mean"),
         examples=("buying_intent_examples", lambda x: " · ".join(v for v in x.dropna().astype(str).head(3))),
-    ).sort_values("buying_intent_score", ascending=False)
-    st.dataframe(grouped, hide_index=True, width="stretch", height=470)
-    st.caption("UNAVAILABLE berarti reply text tidak tersedia. Sistem tidak menebak intent dari jumlah reply.")
+    ).sort_values(["demand_posts", "average_buying_score"], ascending=[False, False])
+    st.dataframe(demand_grouped.round(2), hide_index=True, width="stretch", height=360)
+    st.caption(
+        "Intent utama berasal dari teks post publik. Reply text bukan syarat agar "
+        "market intent bisa dianalisis."
+    )
 
 
 def creators_page(df: pd.DataFrame, demo: bool) -> None:
@@ -507,7 +554,8 @@ def api_configuration_page(runtime: RuntimeConfig) -> None:
             search_base = collector.last_success_base_url or latest.threads_api_base_url
             st.success(
                 f"STEP 2 OK — Keyword Search via {search_base}{latest.threads_search_endpoint} "
-                f"mengembalikan {len(rows)} post."
+                f"mengembalikan {len(rows)} post · {collector.last_pages_fetched} page · "
+                f"{collector.last_raw_count} raw records."
             )
 
 
@@ -523,7 +571,12 @@ def settings_page(mode: str, demo: bool, runtime: RuntimeConfig) -> None:
     st.caption(f"Last collection: {status['last_collection'] or 'Never'} · Token: {'••••••••' if runtime.api_configured else 'Not set'}")
 
     st.subheader("Run official collection")
-    st.info("Ketersediaan keyword search, field engagement, dan reply text mengikuti izin aplikasi serta versi Threads API. Field yang tidak dikirim API tetap kosong.")
+    st.info(
+        "Collector LIVE mencari public posts berdasarkan keyword, mengirim date window "
+        "ke Meta, mengikuti cursor pagination sampai limit, lalu menjalankan dedup, "
+        "product classification, market-intent analysis, dan opportunity scoring. "
+        "Engagement/reply body tetap kosong jika Meta tidak menyediakannya."
+    )
     with st.form("collection_form"):
         keyword = st.text_input("Keyword", placeholder="template excel")
         dates = st.date_input("Date window", value=(date.today() - timedelta(days=runtime.default_date_days), date.today()))
@@ -548,13 +601,18 @@ def settings_page(mode: str, demo: bool, runtime: RuntimeConfig) -> None:
             start, end = dates if isinstance(dates, tuple) else (dates, dates)
             try:
                 request = CollectionRequest(keyword.strip(), start, end, search_type, int(limit), language)
-                raw = build_threads_collector(runtime).collect(request)
+                collector = build_threads_collector(runtime)
+                raw = collector.collect(request)
                 processed = process_posts(raw)
                 inserted = db.insert_posts(processed)
                 db.add_keyword(keyword)
                 db.log_search_run(keyword, search_type, str(start), str(end), "SUCCESS", inserted)
                 load_scored_data.clear()
-                st.success(f"Collection selesai. {inserted} post baru disimpan; {len(processed) - inserted} duplikat dilewati.")
+                st.success(
+                    f"Collection selesai · {collector.last_pages_fetched} page · "
+                    f"{collector.last_raw_count} raw · {len(processed)} processed · "
+                    f"{inserted} post baru · {len(processed) - inserted} duplikat."
+                )
             except CollectorError as exc:
                 db.log_search_run(keyword, search_type, str(start), str(end), "FAILED", 0, str(exc))
                 st.error(str(exc))
@@ -568,6 +626,79 @@ def settings_page(mode: str, demo: bool, runtime: RuntimeConfig) -> None:
         st.success("Keyword tersimpan.")
     active = db.get_keywords()
     st.write(", ".join(active) if active else "Belum ada keyword tersimpan.")
+
+    st.subheader("Batch market research")
+    st.caption(
+        "Jalankan seluruh keyword aktif sekaligus. Setiap keyword dipaginasi sampai "
+        "limit per keyword dan hasil digabung ke database LIVE dengan dedup."
+    )
+    with st.form("batch_collection_form"):
+        batch_dates = st.date_input(
+            "Batch date window",
+            value=(date.today() - timedelta(days=runtime.default_date_days), date.today()),
+            key="batch_dates",
+        )
+        b1, b2 = st.columns(2)
+        batch_search = b1.selectbox(
+            "Batch search type", ["RECENT", "TOP"],
+            index=0 if runtime.default_search_type == "RECENT" else 1,
+        )
+        batch_limit = b2.number_input(
+            "Posts per keyword", 1, runtime.max_posts, min(100, runtime.max_posts),
+        )
+        run_batch = st.form_submit_button(
+            f"Run {len(active)} saved keywords",
+            type="primary",
+            disabled=not active,
+        )
+
+    if run_batch:
+        if not runtime.api_configured:
+            st.error("Simpan Threads access token terlebih dahulu.")
+        else:
+            start, end = (
+                batch_dates if isinstance(batch_dates, tuple)
+                else (batch_dates, batch_dates)
+            )
+            total_raw = total_processed = total_inserted = total_pages = failed = 0
+            progress = st.progress(0.0)
+            status_box = st.empty()
+            for idx, saved_keyword in enumerate(active, start=1):
+                status_box.write(f"Collecting {idx}/{len(active)}: **{saved_keyword}**")
+                try:
+                    collector = build_threads_collector(runtime)
+                    raw = collector.collect(
+                        CollectionRequest(
+                            saved_keyword, start, end, batch_search,
+                            int(batch_limit), runtime.default_language,
+                        )
+                    )
+                    processed = process_posts(raw)
+                    inserted = db.insert_posts(processed)
+                    db.log_search_run(
+                        saved_keyword, batch_search, str(start), str(end),
+                        "SUCCESS", inserted,
+                    )
+                    total_raw += collector.last_raw_count
+                    total_processed += len(processed)
+                    total_inserted += inserted
+                    total_pages += collector.last_pages_fetched
+                except CollectorError as exc:
+                    failed += 1
+                    db.log_search_run(
+                        saved_keyword, batch_search, str(start), str(end),
+                        "FAILED", 0, str(exc),
+                    )
+                progress.progress(idx / len(active))
+            load_scored_data.clear()
+            status_box.empty()
+            st.success(
+                f"Batch selesai · {len(active) - failed}/{len(active)} keyword sukses · "
+                f"{total_pages} page · {total_raw} raw · {total_processed} processed · "
+                f"{total_inserted} post baru."
+            )
+            if failed:
+                st.warning(f"{failed} keyword gagal. Detail tersimpan di search_runs.")
 
     with st.expander("Opportunity Score methodology"):
         st.markdown("\n".join(f"- **{name.replace('_', ' ').title()}**: {weight:.0%}" for name, weight in WEIGHTS.items()))
