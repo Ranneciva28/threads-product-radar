@@ -19,18 +19,24 @@ class ThreadsOfficialCollector(BaseCollector):
     by app review status. Unknown API fields remain ``None``; nothing is inferred.
     """
 
+    # Keep keyword-search fields to the public media fields supported by Meta.
+    # Engagement metrics are exposed via the separate Insights API, not as
+    # fields on /keyword_search.
     FIELD_MAP = {
         "id": "post_id",
         "username": "username",
         "text": "post_text",
         "timestamp": "created_at",
         "permalink": "permalink",
-        "like_count": "like_count",
-        "reply_count": "reply_count",
-        "repost_count": "repost_count",
-        "quote_count": "quote_count",
-        "views": "views",
     }
+
+    ENGAGEMENT_FIELDS = (
+        "like_count",
+        "reply_count",
+        "repost_count",
+        "quote_count",
+        "views",
+    )
 
     def __init__(
         self,
@@ -73,7 +79,11 @@ class ThreadsOfficialCollector(BaseCollector):
                     if detail:
                         message = f"Threads API: {detail}"
                 except ValueError:
-                    pass
+                    status = getattr(exc.response, "status_code", None)
+                    raw = (getattr(exc.response, "text", "") or "").strip()
+                    raw = raw[:300]
+                    if status or raw:
+                        message = f"Threads API gagal (HTTP {status or 'unknown'}): {raw or 'respons non-JSON'}"
             raise CollectorError(message) from exc
         except ValueError as exc:
             raise CollectorError("Respons Threads API bukan JSON yang valid.") from exc
@@ -81,6 +91,7 @@ class ThreadsOfficialCollector(BaseCollector):
         rows: list[dict[str, Any]] = []
         for item in payload.get("data", []) or []:
             row = {target: item.get(source) for source, target in self.FIELD_MAP.items()}
+            row.update({field: None for field in self.ENGAGEMENT_FIELDS})
             row.update(
                 {
                     "display_name": item.get("display_name"),
