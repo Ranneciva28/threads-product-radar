@@ -48,7 +48,14 @@ def test_existing_database_is_migrated_with_market_research_columns(tmp_path: Pa
     path = tmp_path / "legacy.db"
     connection = sqlite3.connect(path)
     connection.execute(
-        "CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id TEXT UNIQUE, post_text TEXT NOT NULL)"
+        """CREATE TABLE posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id TEXT UNIQUE,
+            post_text TEXT NOT NULL,
+            created_at TEXT,
+            product_category TEXT,
+            keyword_source TEXT
+        )"""
     )
     connection.commit()
     connection.close()
