@@ -21,7 +21,7 @@ class RuntimeConfig:
     max_posts: int = 250
     default_date_days: int = 30
     request_timeout_seconds: int = 30
-    default_language: str = "id"
+    default_language: str = ""
     default_search_type: str = "RECENT"
 
     @classmethod
@@ -57,7 +57,7 @@ class RuntimeConfig:
             request_timeout_seconds=_bounded_int(
                 values.get("request_timeout_seconds"), 30, 5, 120
             ),
-            default_language=values.get("default_language", "id").strip() or "id",
+            default_language=values.get("default_language", "").strip(),
             default_search_type=(
                 values.get("default_search_type", "RECENT").strip().upper()
                 or "RECENT"
