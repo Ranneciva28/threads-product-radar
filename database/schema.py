@@ -46,7 +46,6 @@ CREATE TABLE IF NOT EXISTS posts (
 CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at);
 CREATE INDEX IF NOT EXISTS idx_posts_category ON posts(product_category);
 CREATE INDEX IF NOT EXISTS idx_posts_keyword ON posts(keyword_source);
-CREATE INDEX IF NOT EXISTS idx_posts_intent_type ON posts(intent_type);
 
 CREATE TABLE IF NOT EXISTS keywords (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
