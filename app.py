@@ -711,7 +711,14 @@ if not authenticate():
 
 with st.sidebar:
     st.markdown("<div class='brand'>THREADS <span>PRODUCT RADAR</span></div>", unsafe_allow_html=True)
-    mode = st.segmented_control("Data source", ["DEMO", "LIVE"], default="DEMO")
+    default_mode = "LIVE" if settings.is_production else "DEMO"
+    mode = st.segmented_control(
+        "Data source",
+        ["DEMO", "LIVE"],
+        default=default_mode,
+        key="data_source_mode",
+        help="LIVE memakai database persisten. DEMO hanya untuk data simulasi.",
+    )
     menu = st.radio("Navigation", MENU, label_visibility="collapsed")
     if st.session_state.get("authenticated") and st.button("Log out", width="stretch"):
         st.session_state.authenticated = False
