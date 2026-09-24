@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, time as dt_time, timezone
+from datetime import datetime, time as dt_time, timedelta, timezone
 from typing import Any
 
 import requests
@@ -191,7 +191,7 @@ class ThreadsOfficialCollector(BaseCollector):
                 request.end_date, dt_time.max, tzinfo=timezone.utc
             )
         if end_dt <= start_dt:
-            end_dt = start_dt.replace(microsecond=0) + __import__("datetime").timedelta(seconds=1)
+            end_dt = start_dt.replace(microsecond=0) + timedelta(seconds=1)
         return int(start_dt.timestamp()), int(end_dt.timestamp())
 
     @staticmethod
