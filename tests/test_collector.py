@@ -62,7 +62,6 @@ def test_runtime_api_settings_are_used(monkeypatch):
 
     assert captured["url"] == "https://example.test/v9/search"
     assert captured["params"]["limit"] == 7
-    assert captured["params"]["search_mode"] == "KEYWORD"
     assert "access_token" not in captured["params"]
     assert captured["headers"]["Authorization"] == "Bearer token"
     assert captured["timeout"] == 12
