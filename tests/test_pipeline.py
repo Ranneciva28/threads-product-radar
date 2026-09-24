@@ -5,7 +5,7 @@ import pandas as pd
 from analytics.filters import filter_posts
 from data.demo_data import generate_demo_posts
 from pipeline import process_posts
-from processors.buying_intent import detect_buying_intent
+from processors.buying_intent import detect_buying_intent, detect_post_intent
 from processors.classifier import classify_post
 from scoring.opportunity_score import score_posts
 
@@ -50,3 +50,33 @@ def test_filter_posts():
     assert filtered["product_category"].eq(category).all()
     assert filtered["total_engagement"].ge(1).all()
 
+
+
+def test_public_post_text_drives_market_intent_without_replies():
+    signal = detect_post_intent("Ada rekomendasi template budgeting yang bagus?")
+    assert signal["intent_type"] == "RECOMMENDATION_REQUEST"
+    rows = process_posts([
+        {
+            "post_id": "intent-1",
+            "post_text": "Ada rekomendasi template budgeting yang bagus?",
+            "replies_text": None,
+            "engagement_available": 0,
+        }
+    ])
+    row = rows[0]
+    assert row["intent_type"] == "RECOMMENDATION_REQUEST"
+    assert row["buying_intent_score"] > 0
+    assert row["buying_intent_status"] == "POST_TEXT"
+
+
+def test_seller_supply_is_not_counted_as_buying_demand():
+    rows = process_posts([
+        {
+            "post_id": "supply-1",
+            "post_text": "Template Canva saya baru rilis dan tersedia sekarang",
+            "replies_text": None,
+        }
+    ])
+    row = rows[0]
+    assert row["intent_type"] == "SELLER_SUPPLY"
+    assert row["buying_intent_score"] == 0
