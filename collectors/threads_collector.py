@@ -198,7 +198,7 @@ class ThreadsOfficialCollector(BaseCollector):
             "limit": min(max(request.limit, 1), self.max_posts),
             "fields": ",".join(self.FIELD_MAP),
         }
-        payload = self._get_json(url, params)
+        payload = self._get_json_path(self.search_endpoint, params)
 
         rows: list[dict[str, Any]] = []
         for item in payload.get("data", []) or []:
