@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, time as dt_time, timezone
 from typing import Any
 
 import requests
@@ -15,21 +16,27 @@ logger = logging.getLogger(__name__)
 
 
 class ThreadsOfficialCollector(BaseCollector):
-    """Official Threads API adapter.
+    """Official Threads keyword-search collector for public market research.
 
-    The endpoint is configurable because Meta versions and availability may differ
-    by app review status. Unknown API fields remain ``None``; nothing is inferred.
+    The collector only asks Meta for fields documented on Threads media objects.
+    Engagement counters are intentionally left unavailable when keyword search
+    does not return them; downstream scoring re-weights around missing metrics
+    instead of inventing zero engagement.
     """
 
-    # Keep keyword-search fields to the public media fields supported by Meta.
-    # Engagement metrics are exposed via the separate Insights API, not as
-    # fields on /keyword_search.
     FIELD_MAP = {
         "id": "post_id",
         "username": "username",
         "text": "post_text",
         "timestamp": "created_at",
         "permalink": "permalink",
+        "media_type": "media_type",
+        "shortcode": "shortcode",
+        "is_quote_post": "is_quote_post",
+        "has_replies": "has_replies",
+        "topic_tag": "topic_tag",
+        "is_verified": "is_verified",
+        "profile_picture_url": "profile_picture_url",
     }
 
     ENGAGEMENT_FIELDS = (
@@ -41,6 +48,7 @@ class ThreadsOfficialCollector(BaseCollector):
     )
 
     RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
+    PAGE_SIZE = 50
 
     def __init__(
         self,
@@ -56,6 +64,8 @@ class ThreadsOfficialCollector(BaseCollector):
         self.max_posts = max_posts or settings.max_posts
         self.timeout_seconds = timeout_seconds
         self.last_success_base_url: str | None = None
+        self.last_pages_fetched = 0
+        self.last_raw_count = 0
 
     @staticmethod
     def _normalize_token(token: str) -> str:
@@ -93,8 +103,7 @@ class ThreadsOfficialCollector(BaseCollector):
         if response.status_code >= 500:
             return (
                 f"Meta Threads API HTTP {response.status_code}: {excerpt}. "
-                "Server Meta tidak memberi error JSON; coba lagi setelah token "
-                "terverifikasi."
+                "Server Meta tidak memberi error JSON."
             )
         return f"Threads API HTTP {response.status_code}: {excerpt}"
 
@@ -102,7 +111,7 @@ class ThreadsOfficialCollector(BaseCollector):
         headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {self.token}",
-            "User-Agent": "ThreadsProductRadar/1.0",
+            "User-Agent": "ThreadsProductRadar/2.0",
         }
         response: requests.Response | None = None
         for attempt in range(2):
@@ -139,12 +148,6 @@ class ThreadsOfficialCollector(BaseCollector):
         return payload
 
     def _base_candidates(self) -> list[str]:
-        """Try both documented Threads host styles when Meta returns a 5xx.
-
-        Meta examples currently use both the bare graph.threads.net host and
-        versioned /v1.0 paths. A server-side 5xx with an empty body gives us no
-        useful diagnosis, so retry the alternate form before surfacing failure.
-        """
         candidates = [self.base_url]
         bare = "https://graph.threads.net"
         versioned = f"{bare}/v1.0"
@@ -167,8 +170,9 @@ class ThreadsOfficialCollector(BaseCollector):
             except CollectorError as exc:
                 last_error = exc
                 message = str(exc)
-                # Only route/version fallback for opaque server-side errors.
-                if index == 0 and any(f"HTTP {code}" in message for code in self.RETRYABLE_STATUS_CODES):
+                if index == 0 and any(
+                    f"HTTP {code}" in message for code in self.RETRYABLE_STATUS_CODES
+                ):
                     continue
                 raise
         detail = str(last_error) if last_error else "unknown error"
@@ -176,8 +180,29 @@ class ThreadsOfficialCollector(BaseCollector):
             f"{detail} | Endpoint dicoba: {' -> '.join(attempted)}"
         )
 
+    @staticmethod
+    def _date_window_params(request: CollectionRequest) -> tuple[int, int]:
+        start_dt = datetime.combine(request.start_date, dt_time.min, tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        if request.end_date >= now.date():
+            end_dt = now
+        else:
+            end_dt = datetime.combine(
+                request.end_date, dt_time.max, tzinfo=timezone.utc
+            )
+        if end_dt <= start_dt:
+            end_dt = start_dt.replace(microsecond=0) + __import__("datetime").timedelta(seconds=1)
+        return int(start_dt.timestamp()), int(end_dt.timestamp())
+
+    @staticmethod
+    def _sqlite_value(value: Any) -> Any:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        return value
+
     def validate_token(self) -> dict[str, Any]:
-        """Validate that the saved credential is a Threads user access token."""
         if not self.token:
             raise CollectorError("Threads access token belum dikonfigurasi.")
         return self._get_json_path(
@@ -191,36 +216,84 @@ class ThreadsOfficialCollector(BaseCollector):
         if request.start_date > request.end_date:
             raise CollectorError("Start date tidak boleh melewati end date.")
 
-        params = {
+        target = min(max(request.limit, 1), self.max_posts)
+        since, until = self._date_window_params(request)
+        base_params: dict[str, Any] = {
             "q": request.keyword,
             "search_type": request.search_type.upper(),
-            "limit": min(max(request.limit, 1), self.max_posts),
             "fields": ",".join(self.FIELD_MAP),
+            "since": since,
+            "until": until,
         }
-        payload = self._get_json_path(self.search_endpoint, params)
 
         rows: list[dict[str, Any]] = []
-        for item in payload.get("data", []) or []:
-            row = {target: item.get(source) for source, target in self.FIELD_MAP.items()}
-            row.update({field: None for field in self.ENGAGEMENT_FIELDS})
-            row.update(
-                {
-                    "display_name": item.get("display_name"),
-                    "keyword_source": request.keyword,
-                    "search_type": request.search_type.upper(),
-                    "language": request.language,
-                    "crawl_timestamp": datetime.now(timezone.utc).isoformat(),
-                    "data_source": "THREADS_API",
-                    "replies_text": item.get("replies_text"),
+        seen_ids: set[str] = set()
+        seen_links: set[str] = set()
+        seen_cursors: set[str] = set()
+        after: str | None = None
+        self.last_pages_fetched = 0
+        self.last_raw_count = 0
+
+        while len(rows) < target:
+            params = dict(base_params)
+            params["limit"] = min(self.PAGE_SIZE, target - len(rows))
+            if after:
+                params["after"] = after
+
+            payload = self._get_json_path(self.search_endpoint, params)
+            self.last_pages_fetched += 1
+            items = payload.get("data", []) or []
+            if not isinstance(items, list):
+                raise CollectorError("Threads API mengembalikan field data yang tidak valid.")
+            self.last_raw_count += len(items)
+
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                post_id = str(item.get("id") or "").strip()
+                permalink = str(item.get("permalink") or "").strip()
+                if post_id and post_id in seen_ids:
+                    continue
+                if permalink and permalink in seen_links:
+                    continue
+
+                row = {
+                    target_field: self._sqlite_value(item.get(source_field))
+                    for source_field, target_field in self.FIELD_MAP.items()
                 }
-            )
-            timestamp = row.get("created_at")
-            if timestamp:
-                try:
-                    created_date = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00")).date()
-                    if not request.start_date <= created_date <= request.end_date:
-                        continue
-                except ValueError:
-                    pass
-            rows.append(row)
+                row.update({field: None for field in self.ENGAGEMENT_FIELDS})
+                row.update(
+                    {
+                        "display_name": item.get("display_name"),
+                        "keyword_source": request.keyword,
+                        "search_type": request.search_type.upper(),
+                        "language": request.language,
+                        "crawl_timestamp": datetime.now(timezone.utc).isoformat(),
+                        "data_source": "THREADS_API",
+                        "replies_text": None,
+                        "engagement_available": 0,
+                    }
+                )
+                rows.append(row)
+                if post_id:
+                    seen_ids.add(post_id)
+                if permalink:
+                    seen_links.add(permalink)
+                if len(rows) >= target:
+                    break
+
+            paging = payload.get("paging") or {}
+            cursors = paging.get("cursors") if isinstance(paging, dict) else {}
+            next_after = cursors.get("after") if isinstance(cursors, dict) else None
+            if (
+                not items
+                or not next_after
+                or next_after == after
+                or str(next_after) in seen_cursors
+                or len(rows) >= target
+            ):
+                break
+            seen_cursors.add(str(next_after))
+            after = str(next_after)
+
         return rows
