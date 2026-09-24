@@ -82,9 +82,12 @@ def test_keyword_search_uses_only_supported_public_fields(monkeypatch):
     ).collect(request())
 
     requested_fields = set(captured["params"]["fields"].split(","))
-    assert requested_fields == {"id", "username", "text", "timestamp", "permalink"}
+    assert {"id", "username", "text", "timestamp", "permalink"}.issubset(requested_fields)
+    assert {"media_type", "shortcode", "is_quote_post", "has_replies"}.issubset(requested_fields)
     assert "like_count" not in requested_fields
     assert "views" not in requested_fields
+    assert "since" in captured["params"]
+    assert "until" in captured["params"]
 
 
 def test_validate_token_uses_me_endpoint_and_normalizes_bearer(monkeypatch):
@@ -144,3 +147,83 @@ def test_versioned_500_falls_back_to_unversioned_host(monkeypatch):
     assert identity["username"] == "avicenna"
     assert calls[-1] == "https://graph.threads.net/me"
     assert collector.last_success_base_url == "https://graph.threads.net"
+
+
+def test_keyword_search_follows_after_cursor_until_limit(monkeypatch):
+    calls = []
+
+    def fake_get(url, params, headers, timeout):
+        calls.append(dict(params))
+        if len(calls) == 1:
+            return FakeResponse({
+                "data": [
+                    {
+                        "id": "1",
+                        "username": "one",
+                        "text": "need a notion template",
+                        "timestamp": "2026-09-24T01:00:00+0000",
+                        "permalink": "https://threads.net/t/1",
+                        "has_replies": True,
+                    }
+                ],
+                "paging": {"cursors": {"after": "NEXT"}},
+            })
+        return FakeResponse({
+            "data": [
+                {
+                    "id": "2",
+                    "username": "two",
+                    "text": "looking for a budget planner",
+                    "timestamp": "2026-09-24T02:00:00+0000",
+                    "permalink": "https://threads.net/t/2",
+                    "has_replies": False,
+                }
+            ],
+            "paging": {"cursors": {}},
+        })
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    today = date(2026, 9, 24)
+    collector = ThreadsOfficialCollector(
+        "token", base_url="https://graph.threads.net", max_posts=10
+    )
+    rows = collector.collect(
+        CollectionRequest("template", today, today, limit=2)
+    )
+
+    assert [row["post_id"] for row in rows] == ["1", "2"]
+    assert calls[1]["after"] == "NEXT"
+    assert collector.last_pages_fetched == 2
+    assert collector.last_raw_count == 2
+    assert rows[0]["engagement_available"] == 0
+
+
+def test_keyword_search_deduplicates_pages(monkeypatch):
+    calls = []
+
+    def fake_get(url, params, headers, timeout):
+        calls.append(dict(params))
+        if len(calls) == 1:
+            return FakeResponse({
+                "data": [{
+                    "id": "1", "username": "one", "text": "template",
+                    "timestamp": "2026-09-24T01:00:00+0000",
+                    "permalink": "https://threads.net/t/1",
+                }],
+                "paging": {"cursors": {"after": "NEXT"}},
+            })
+        return FakeResponse({
+            "data": [{
+                "id": "1", "username": "one", "text": "template",
+                "timestamp": "2026-09-24T01:00:00+0000",
+                "permalink": "https://threads.net/t/1",
+            }],
+            "paging": {"cursors": {}},
+        })
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    today = date(2026, 9, 24)
+    rows = ThreadsOfficialCollector(
+        "token", base_url="https://graph.threads.net", max_posts=10
+    ).collect(CollectionRequest("template", today, today, limit=5))
+    assert len(rows) == 1
