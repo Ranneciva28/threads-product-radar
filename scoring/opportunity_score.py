@@ -41,9 +41,13 @@ def score_posts(rows: Iterable[dict]) -> pd.DataFrame:
     )
     df["engagement_component"] = _minmax(df["weighted_engagement"])
 
-    engagement_available = pd.to_numeric(
-        df.get("engagement_available", pd.Series(1, index=df.index)),
+    raw_availability = pd.to_numeric(
+        df.get("engagement_available", pd.Series(float("nan"), index=df.index)),
         errors="coerce",
+    )
+    inferred_availability = df["total_engagement"].gt(0).astype(int)
+    engagement_available = raw_availability.where(
+        raw_availability.notna(), inferred_availability
     ).fillna(0).clip(0, 1)
     df["engagement_available"] = engagement_available.astype(int)
 
