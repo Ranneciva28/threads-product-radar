@@ -13,7 +13,7 @@ class CollectionRequest:
     end_date: date
     search_type: str = "RECENT"
     limit: int = 100
-    language: str = "id"
+    language: str = ""
 
 
 class CollectorError(RuntimeError):
