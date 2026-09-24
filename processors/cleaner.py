@@ -11,6 +11,7 @@ DIGITAL_TERMS = {
     "course", "kelas online", "preset", "dashboard", "digital product",
 }
 SPAM_TERMS = {"follow for follow", "follback", "slot gacor", "judi online"}
+ENGAGEMENT_FIELDS = ("like_count", "reply_count", "repost_count", "quote_count")
 
 
 def normalize_text(value: Any) -> str:
@@ -64,11 +65,26 @@ def clean_posts(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
         row["post_text_normalized"] = lower
         row["language"] = row.get("language") or detect_language(text)
         row["is_digital_product"] = int(mentions_digital_product(text))
-        for field in ("like_count", "reply_count", "repost_count", "quote_count"):
+
+        explicit_availability = row.get("engagement_available")
+        if explicit_availability is None:
+            engagement_available = any(
+                row.get(field) not in (None, "") for field in ENGAGEMENT_FIELDS
+            )
+        else:
+            engagement_available = bool(explicit_availability)
+        row["engagement_available"] = int(engagement_available)
+
+        for field in ENGAGEMENT_FIELDS:
+            value = row.get(field)
+            if value in (None, ""):
+                row[field] = 0
+                continue
             try:
-                row[field] = max(int(row.get(field) or 0), 0)
+                row[field] = max(int(value), 0)
             except (TypeError, ValueError):
                 row[field] = 0
+
         cleaned.append(row)
         if post_id:
             seen_ids.add(post_id)
@@ -76,4 +92,3 @@ def clean_posts(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             seen_links.add(permalink)
         seen_texts.append(lower)
     return cleaned
-
