@@ -471,22 +471,44 @@ def api_configuration_page(runtime: RuntimeConfig) -> None:
             st.error("Test keyword wajib diisi.")
         else:
             today = date.today()
+            collector = build_threads_collector(latest)
+
+            # Step 1: prove the saved token works independently of keyword search.
             try:
-                collector = build_threads_collector(latest)
                 identity = collector.validate_token()
+            except CollectorError as exc:
+                st.error(f"STEP 1 — Token / profile check gagal: {exc}")
+                st.caption(
+                    "Belum masuk ke keyword search. Fokuskan pengecekan ke access token "
+                    "dan endpoint /me terlebih dahulu."
+                )
+                return
+
+            username = identity.get("username") or identity.get("id") or "unknown"
+            token_base = collector.last_success_base_url or latest.threads_api_base_url
+            st.success(f"STEP 1 OK — token valid untuk @{username} via {token_base}/me")
+
+            # Step 2: isolate permission / endpoint problems on keyword search.
+            try:
                 rows = collector.collect(
                     CollectionRequest(
                         test_keyword.strip(), today - timedelta(days=7), today,
                         latest.default_search_type, 10, latest.default_language,
                     )
                 )
-                username = identity.get("username") or identity.get("id") or "unknown"
-                st.success(
-                    f"Token valid untuk @{username}. Keyword Search berhasil dan "
-                    f"mengembalikan {len(rows)} post pada window pengujian."
-                )
             except CollectorError as exc:
-                st.error(str(exc))
+                st.error(f"STEP 2 — Keyword Search gagal setelah token dinyatakan valid: {exc}")
+                st.warning(
+                    "Token sudah lolos /me. Jadi masalah tersisa ada di keyword-search "
+                    "request, permission threads_keyword_search, atau akses fitur pada Meta App."
+                )
+                return
+
+            search_base = collector.last_success_base_url or latest.threads_api_base_url
+            st.success(
+                f"STEP 2 OK — Keyword Search via {search_base}{latest.threads_search_endpoint} "
+                f"mengembalikan {len(rows)} post."
+            )
 
 
 def settings_page(mode: str, demo: bool, runtime: RuntimeConfig) -> None:
