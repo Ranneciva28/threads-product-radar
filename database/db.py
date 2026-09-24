@@ -76,6 +76,96 @@ class Database:
         except OSError:
             pass
 
+    def ensure_superadmin(
+        self, username: str, password_hash: str, display_name: str | None = None
+    ) -> None:
+        username = username.strip()
+        if not username:
+            return
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO users
+                (username, display_name, password_hash, role, active, updated_at)
+                VALUES (?, ?, ?, 'SUPERADMIN', 1, CURRENT_TIMESTAMP)
+                ON CONFLICT(username) DO UPDATE SET
+                    display_name=COALESCE(excluded.display_name, users.display_name),
+                    password_hash=excluded.password_hash,
+                    role='SUPERADMIN',
+                    active=1,
+                    updated_at=CURRENT_TIMESTAMP""",
+                (username, display_name, password_hash),
+            )
+
+    def get_user(self, username: str) -> dict | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT id, username, display_name, password_hash, role, active,
+                          created_at, updated_at, last_login_at
+                   FROM users
+                   WHERE username = ? COLLATE NOCASE""",
+                (username.strip(),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_users(self) -> list[dict]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT id, username, display_name, role, active,
+                          created_at, updated_at, last_login_at
+                   FROM users
+                   ORDER BY CASE role WHEN 'SUPERADMIN' THEN 0 ELSE 1 END,
+                            username COLLATE NOCASE"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_user(
+        self,
+        username: str,
+        password_hash: str,
+        display_name: str | None = None,
+        role: str = "USER",
+    ) -> None:
+        username = username.strip()
+        role = role.strip().upper()
+        if not username:
+            raise ValueError("Username wajib diisi.")
+        if role not in {"SUPERADMIN", "USER"}:
+            raise ValueError("Role tidak valid.")
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO users
+                (username, display_name, password_hash, role, active)
+                VALUES (?, ?, ?, ?, 1)""",
+                (username, (display_name or "").strip() or None, password_hash, role),
+            )
+
+    def set_user_active(self, username: str, active: bool) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """UPDATE users
+                   SET active = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE username = ? COLLATE NOCASE AND role != 'SUPERADMIN'""",
+                (int(active), username.strip()),
+            )
+
+    def reset_user_password(self, username: str, password_hash: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """UPDATE users
+                   SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE username = ? COLLATE NOCASE AND role != 'SUPERADMIN'""",
+                (password_hash, username.strip()),
+            )
+
+    def mark_user_login(self, username: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """UPDATE users
+                   SET last_login_at = CURRENT_TIMESTAMP
+                   WHERE username = ? COLLATE NOCASE""",
+                (username.strip(),),
+            )
+
     def seed_app_settings(
         self, values: dict[str, str], secret_keys: set[str] | None = None
     ) -> None:
