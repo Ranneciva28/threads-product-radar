@@ -6,7 +6,7 @@ Internal Streamlit dashboard untuk meriset produk digital yang mendapat engageme
 
 - Dashboard 11 menu dengan filter global dan konfigurasi API dari UI.
 - Collector resmi Threads yang modular dan configurable.
-- Cleaning, deduplication, rule-based product classification, hook pattern, CTA pattern, dan buying-intent detection.
+- Cleaning, deduplication, rule-based product classification, hook pattern, CTA pattern, serta market-intent detection langsung dari teks post publik (purchase intent, product search, recommendation, consideration, pain point, supply, dan validation).
 - Product Opportunity Score 0–100 beserta breakdown.
 - SQLite terpisah untuk demo dan live data.
 - Ekspor CSV dan workbook Excel tujuh sheet.
@@ -72,7 +72,7 @@ otomatis sekali ke SQLite tanpa menimpa nilai yang sudah disimpan melalui UI.
 
 Meta menambahkan public-post keyword search pada Threads API pada 2025. Ketersediaan endpoint, field, search type, dan reply text tetap bergantung pada versi API, izin aplikasi, app review, serta perubahan kebijakan Meta. Karena itu base URL dan endpoint dibuat configurable.
 
-Collector hanya memakai API resmi, memiliki timeout, menangani respons kosong/error, dan tidak mengarang metric yang tidak dikirim API. Jika `views`, follower count, atau reply text tidak tersedia, nilainya tetap kosong. Buying-intent menjadi `UNAVAILABLE` bila reply text tidak tersedia.
+Collector hanya memakai API resmi, memiliki timeout, cursor pagination, date-window `since/until`, dedup, dan tidak mengarang metric yang tidak dikirim API. Public keyword search dipakai sebagai sumber market research. Jika engagement counters atau reply text tidak dikirim Meta, nilainya tetap unavailable; market intent tetap dianalisis dari teks post publik.
 
 ## 5. Data pipeline
 
@@ -81,8 +81,8 @@ Urutan pipeline:
 1. Collector menghasilkan record dengan interface standar.
 2. Cleaner menormalkan whitespace, memfilter spam dasar, mendeteksi bahasa, dan deduplicate ID/permalink/kemiripan teks.
 3. Classifier rule-based menentukan kategori, subkategori, dan confidence.
-4. Buying-intent detector memeriksa reply text yang benar-benar tersedia.
-5. Scoring menghitung metric post dan agregasi kategori.
+4. Market-intent detector mengklasifikasikan teks post publik dan memakai reply text sebagai enrichment opsional.
+5. Scoring menghitung metric post dan agregasi kategori; jika engagement tidak tersedia, bobot engagement dikeluarkan lalu bobot komponen lain dinormalisasi ulang.
 6. SQLite menyimpan record bersih dan mencegah duplicate insert.
 
 Menambahkan collector baru cukup dengan membuat class turunan `BaseCollector`; dashboard dan analytics tidak perlu diubah selama output memakai contract field yang sama.
@@ -107,7 +107,7 @@ Rules berada di `processors/classifier.py`. Tambahkan rule sebelum kategori yang
 
 ## 8. Keyword management
 
-Buka **API Configuration** untuk menyimpan Threads access token, base URL, endpoint, timeout, batas post, bahasa, dan default pencarian langsung dari dashboard. Token tidak pernah ditampilkan kembali. Setelah itu buka **Settings → Keyword management**, masukkan keyword, lalu Save. Keyword tersimpan di tabel `keywords`. Untuk menjalankan collection, isi form di bagian **Run official collection**.
+Buka **API Configuration** untuk menyimpan Threads access token, base URL, endpoint, timeout, batas post, bahasa, dan default pencarian langsung dari dashboard. Token tidak pernah ditampilkan kembali. Setelah itu buka **Settings → Keyword management**, masukkan keyword, lalu Save. Keyword tersimpan di tabel `keywords`. Gunakan **Run official collection** untuk satu keyword atau **Batch market research** untuk menjalankan seluruh keyword aktif. Setiap keyword mengikuti cursor pagination sampai limit per keyword.
 
 ## 9. Export
 
