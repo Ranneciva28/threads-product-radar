@@ -20,8 +20,12 @@ def build_excel(df: pd.DataFrame) -> bytes:
     creators = creator_analytics(df)
     top_threads = df.sort_values("opportunity_score", ascending=False).head(100)
     buying = df[[
-        c for c in ["product_category", "buying_intent_score", "buying_intent_count",
-                    "buying_intent_status", "buying_intent_examples", "post_text"] if c in df
+        c for c in [
+            "product_category", "intent_type", "intent_score", "intent_source",
+            "intent_signals", "buying_intent_score", "buying_intent_count",
+            "buying_intent_status", "buying_intent_examples", "post_text",
+            "username", "permalink",
+        ] if c in df
     ]]
     overview = pd.DataFrame({
         "Metric": ["Total Posts", "Digital Product Posts", "Product Categories", "Average Engagement"],
@@ -35,7 +39,7 @@ def build_excel(df: pd.DataFrame) -> bytes:
         "Top Threads": top_threads,
         "Keywords": keywords,
         "Creators": creators,
-        "Buying Intent": buying,
+        "Market Intent": buying,
         "Raw Data": df,
     }
     output = BytesIO()
