@@ -16,6 +16,14 @@ CREATE TABLE IF NOT EXISTS posts (
     repost_count INTEGER DEFAULT 0,
     quote_count INTEGER DEFAULT 0,
     views INTEGER,
+    engagement_available INTEGER,
+    media_type TEXT,
+    shortcode TEXT,
+    is_quote_post INTEGER,
+    has_replies INTEGER,
+    topic_tag TEXT,
+    is_verified INTEGER,
+    profile_picture_url TEXT,
     keyword_source TEXT,
     search_type TEXT,
     language TEXT,
@@ -25,6 +33,10 @@ CREATE TABLE IF NOT EXISTS posts (
     product_category TEXT,
     product_subcategory TEXT,
     classification_confidence REAL,
+    intent_type TEXT,
+    intent_score REAL,
+    intent_source TEXT,
+    intent_signals TEXT,
     buying_intent_count INTEGER,
     buying_intent_score REAL,
     buying_intent_status TEXT,
@@ -34,6 +46,7 @@ CREATE TABLE IF NOT EXISTS posts (
 CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at);
 CREATE INDEX IF NOT EXISTS idx_posts_category ON posts(product_category);
 CREATE INDEX IF NOT EXISTS idx_posts_keyword ON posts(keyword_source);
+CREATE INDEX IF NOT EXISTS idx_posts_intent_type ON posts(intent_type);
 
 CREATE TABLE IF NOT EXISTS keywords (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
