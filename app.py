@@ -419,7 +419,8 @@ def api_configuration_page(runtime: RuntimeConfig) -> None:
         )
         language = c2.text_input(
             "Default language", value=runtime.default_language,
-            help="Contoh: id, en, ms",
+            placeholder="Opsional — kosongkan untuk tidak menetapkan bahasa",
+            help="Opsional. Contoh: id, en, ms. Jika kosong, bahasa tidak dipaksakan.",
         )
         saved = st.form_submit_button("Save API configuration", type="primary")
 
@@ -434,8 +435,6 @@ def api_configuration_page(runtime: RuntimeConfig) -> None:
             errors.append("API base URL wajib berupa URL HTTPS yang valid.")
         if not normalized_endpoint or " " in normalized_endpoint:
             errors.append("Keyword search endpoint wajib berupa path valid tanpa spasi.")
-        if not language.strip():
-            errors.append("Default language tidak boleh kosong.")
         if clear_token and token.strip():
             errors.append("Pilih salah satu: isi token baru atau hapus token.")
         if errors:
@@ -501,7 +500,11 @@ def settings_page(mode: str, demo: bool, runtime: RuntimeConfig) -> None:
         search_index = search_options.index(runtime.default_search_type) if runtime.default_search_type in search_options else 0
         search_type = c1.selectbox("Search type", search_options, index=search_index)
         language_options = list(dict.fromkeys([runtime.default_language, "id", "en"]))
-        language = c2.selectbox("Target language", language_options)
+        language = c2.selectbox(
+            "Target language",
+            language_options,
+            format_func=lambda value: "Auto / not specified" if value == "" else value,
+        )
         limit = c3.number_input("Maximum posts", 1, runtime.max_posts, min(100, runtime.max_posts))
         run = st.form_submit_button("Collect & process", type="primary")
     if run:
