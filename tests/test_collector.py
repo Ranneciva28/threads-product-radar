@@ -59,3 +59,23 @@ def test_runtime_api_settings_are_used(monkeypatch):
     assert captured["url"] == "https://example.test/v9/search"
     assert captured["params"]["limit"] == 7
     assert captured["timeout"] == 12
+
+
+def test_keyword_search_uses_only_supported_public_fields(monkeypatch):
+    captured = {}
+
+    def fake_get(url, params, timeout):
+        captured.update(url=url, params=params, timeout=timeout)
+        return FakeResponse({"data": []})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    ThreadsOfficialCollector(
+        token="token",
+        base_url="https://graph.threads.net",
+        search_endpoint="/keyword_search",
+    ).collect(request())
+
+    requested_fields = set(captured["params"]["fields"].split(","))
+    assert requested_fields == {"id", "username", "text", "timestamp", "permalink"}
+    assert "like_count" not in requested_fields
+    assert "views" not in requested_fields
