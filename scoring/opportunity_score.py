@@ -30,6 +30,7 @@ def score_posts(rows: Iterable[dict]) -> pd.DataFrame:
     df = pd.DataFrame(list(rows))
     if df.empty:
         return df
+
     for field in ("like_count", "reply_count", "repost_count", "quote_count"):
         df[field] = pd.to_numeric(df.get(field, 0), errors="coerce").fillna(0).clip(lower=0)
     df["total_engagement"] = (
@@ -39,6 +40,12 @@ def score_posts(rows: Iterable[dict]) -> pd.DataFrame:
         df["like_count"] + 2 * df["reply_count"] + 3 * df["repost_count"] + 3 * df["quote_count"]
     )
     df["engagement_component"] = _minmax(df["weighted_engagement"])
+
+    engagement_available = pd.to_numeric(
+        df.get("engagement_available", pd.Series(1, index=df.index)),
+        errors="coerce",
+    ).fillna(0).clip(0, 1)
+    df["engagement_available"] = engagement_available.astype(int)
 
     intent = pd.to_numeric(df.get("buying_intent_score"), errors="coerce")
     df["buying_intent_component"] = intent.fillna(0).clip(0, 100)
@@ -59,14 +66,22 @@ def score_posts(rows: Iterable[dict]) -> pd.DataFrame:
     demand_per_creator = cat_posts / creators
     df["competition_gap_component"] = _minmax(demand_per_creator)
 
-    df["opportunity_score"] = sum(
-        df[column] * weight
-        for column, weight in [
-            ("engagement_component", WEIGHTS["engagement"]),
-            ("buying_intent_component", WEIGHTS["buying_intent"]),
-            ("recency_growth_component", WEIGHTS["recency_growth"]),
-            ("demand_frequency_component", WEIGHTS["demand_frequency"]),
-            ("competition_gap_component", WEIGHTS["competition_gap"]),
-        ]
-    ).round(2)
+    weighted_sum = (
+        df["engagement_component"] * WEIGHTS["engagement"] * engagement_available
+        + df["buying_intent_component"] * WEIGHTS["buying_intent"]
+        + df["recency_growth_component"] * WEIGHTS["recency_growth"]
+        + df["demand_frequency_component"] * WEIGHTS["demand_frequency"]
+        + df["competition_gap_component"] * WEIGHTS["competition_gap"]
+    )
+    active_weight = (
+        WEIGHTS["engagement"] * engagement_available
+        + WEIGHTS["buying_intent"]
+        + WEIGHTS["recency_growth"]
+        + WEIGHTS["demand_frequency"]
+        + WEIGHTS["competition_gap"]
+    )
+    df["opportunity_score"] = (weighted_sum / active_weight.replace(0, 1)).clip(0, 100).round(2)
+    df["score_basis"] = engagement_available.map(
+        {1: "FULL_WITH_ENGAGEMENT", 0: "CONTENT_INTENT_NO_ENGAGEMENT"}
+    )
     return df
