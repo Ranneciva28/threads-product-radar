@@ -119,7 +119,9 @@ def test_non_json_server_error_is_actionable_and_retried(monkeypatch):
     with pytest.raises(CollectorError, match="Meta Threads API HTTP 500"):
         ThreadsOfficialCollector("token").collect(request())
 
-    assert len(calls) == 2
+    # Two attempts on the configured base plus two attempts on the alternate
+    # Threads host form.
+    assert len(calls) == 4
 
 
 def test_versioned_500_falls_back_to_unversioned_host(monkeypatch):
