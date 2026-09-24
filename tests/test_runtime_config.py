@@ -1,4 +1,4 @@
-from config.runtime_config import RuntimeConfig
+from config.runtime_config import RuntimeConfig, normalize_threads_base_url
 from database.db import Database
 
 
@@ -50,3 +50,18 @@ def test_runtime_config_bounds_invalid_values():
 def test_runtime_config_allows_blank_language():
     config = RuntimeConfig.from_mapping({"default_language": "   "})
     assert config.default_language == ""
+
+
+def test_threads_base_url_adds_explicit_version():
+    assert (
+        normalize_threads_base_url("https://graph.threads.net/")
+        == "https://graph.threads.net/v1.0"
+    )
+
+
+def test_threads_base_url_preserves_version_and_custom_hosts():
+    assert (
+        normalize_threads_base_url("https://graph.threads.net/v1.0/")
+        == "https://graph.threads.net/v1.0"
+    )
+    assert normalize_threads_base_url("https://api.example.test") == "https://api.example.test"

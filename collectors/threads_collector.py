@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -38,6 +40,8 @@ class ThreadsOfficialCollector(BaseCollector):
         "views",
     )
 
+    RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
+
     def __init__(
         self,
         token: str | None = None,
@@ -46,11 +50,101 @@ class ThreadsOfficialCollector(BaseCollector):
         max_posts: int | None = None,
         timeout_seconds: int = 30,
     ) -> None:
-        self.token = token or settings.threads_access_token
+        self.token = self._normalize_token(token or settings.threads_access_token)
         self.base_url = (base_url or settings.threads_api_base_url).rstrip("/")
         self.search_endpoint = search_endpoint or settings.threads_search_endpoint
         self.max_posts = max_posts or settings.max_posts
         self.timeout_seconds = timeout_seconds
+
+    @staticmethod
+    def _normalize_token(token: str) -> str:
+        normalized = token.strip().strip('"').strip("'")
+        if normalized.lower().startswith("bearer "):
+            normalized = normalized[7:].strip()
+        return normalized
+
+    @staticmethod
+    def _safe_response_excerpt(response: requests.Response) -> str:
+        raw = (response.text or "").strip()
+        if not raw:
+            return "respons kosong/non-JSON"
+        raw = re.sub(r"\s+", " ", raw)
+        return raw[:300]
+
+    @staticmethod
+    def _api_error_message(response: requests.Response, payload: Any) -> str:
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, dict):
+                detail = str(error.get("message") or "Unknown Meta API error")
+                metadata = []
+                for label, key in (
+                    ("code", "code"),
+                    ("subcode", "error_subcode"),
+                    ("trace", "fbtrace_id"),
+                ):
+                    if error.get(key) not in (None, ""):
+                        metadata.append(f"{label}={error[key]}")
+                suffix = f" ({', '.join(metadata)})" if metadata else ""
+                return f"Threads API HTTP {response.status_code}: {detail}{suffix}"
+
+        excerpt = ThreadsOfficialCollector._safe_response_excerpt(response)
+        if response.status_code >= 500:
+            return (
+                f"Meta Threads API HTTP {response.status_code}: {excerpt}. "
+                "Server Meta tidak memberi error JSON; coba lagi setelah token "
+                "terverifikasi."
+            )
+        return f"Threads API HTTP {response.status_code}: {excerpt}"
+
+    def _get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.token}",
+            "User-Agent": "ThreadsProductRadar/1.0",
+        }
+        response: requests.Response | None = None
+        for attempt in range(2):
+            try:
+                response = requests.get(
+                    url,
+                    params=params,
+                    headers=headers,
+                    timeout=self.timeout_seconds,
+                )
+            except requests.RequestException as exc:
+                logger.warning("Threads API network request failed: %s", type(exc).__name__)
+                raise CollectorError(
+                    "Threads API tidak dapat dijangkau dari server. Periksa koneksi "
+                    "outbound/DNS VPS lalu coba lagi."
+                ) from exc
+
+            if response.status_code not in self.RETRYABLE_STATUS_CODES or attempt == 1:
+                break
+            time.sleep(0.4)
+
+        assert response is not None
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+        if not response.ok:
+            raise CollectorError(self._api_error_message(response, payload))
+        if not isinstance(payload, dict):
+            raise CollectorError(
+                "Threads API mengembalikan respons sukses yang bukan JSON object."
+            )
+        return payload
+
+    def validate_token(self) -> dict[str, Any]:
+        """Validate that the saved credential is a Threads user access token."""
+        if not self.token:
+            raise CollectorError("Threads access token belum dikonfigurasi.")
+        return self._get_json(
+            f"{self.base_url}/me",
+            {"fields": "id,username"},
+        )
 
     def collect(self, request: CollectionRequest) -> list[dict[str, Any]]:
         if not self.token:
@@ -62,31 +156,11 @@ class ThreadsOfficialCollector(BaseCollector):
         params = {
             "q": request.keyword,
             "search_type": request.search_type.upper(),
+            "search_mode": "KEYWORD",
             "limit": min(max(request.limit, 1), self.max_posts),
             "fields": ",".join(self.FIELD_MAP),
-            "access_token": self.token,
         }
-        try:
-            response = requests.get(url, params=params, timeout=self.timeout_seconds)
-            response.raise_for_status()
-            payload = response.json()
-        except requests.RequestException as exc:
-            logger.exception("Threads API request failed")
-            message = "Threads API gagal diakses. Periksa token, izin aplikasi, dan endpoint."
-            if getattr(exc, "response", None) is not None:
-                try:
-                    detail = exc.response.json().get("error", {}).get("message")
-                    if detail:
-                        message = f"Threads API: {detail}"
-                except ValueError:
-                    status = getattr(exc.response, "status_code", None)
-                    raw = (getattr(exc.response, "text", "") or "").strip()
-                    raw = raw[:300]
-                    if status or raw:
-                        message = f"Threads API gagal (HTTP {status or 'unknown'}): {raw or 'respons non-JSON'}"
-            raise CollectorError(message) from exc
-        except ValueError as exc:
-            raise CollectorError("Respons Threads API bukan JSON yang valid.") from exc
+        payload = self._get_json(url, params)
 
         rows: list[dict[str, Any]] = []
         for item in payload.get("data", []) or []:

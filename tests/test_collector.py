@@ -8,15 +8,19 @@ from collectors.threads_collector import ThreadsOfficialCollector
 
 
 class FakeResponse:
-    def __init__(self, payload, fail=False):
+    def __init__(self, payload, fail=False, status_code=None, text=""):
         self.payload = payload
         self.fail = fail
+        self.status_code = status_code or (400 if fail else 200)
+        self.text = text
 
-    def raise_for_status(self):
-        if self.fail:
-            raise requests.HTTPError("failure", response=self)
+    @property
+    def ok(self):
+        return self.status_code < 400
 
     def json(self):
+        if isinstance(self.payload, ValueError):
+            raise self.payload
         return self.payload
 
 
@@ -38,8 +42,8 @@ def test_api_error_is_wrapped(monkeypatch):
 def test_runtime_api_settings_are_used(monkeypatch):
     captured = {}
 
-    def fake_get(url, params, timeout):
-        captured.update(url=url, params=params, timeout=timeout)
+    def fake_get(url, params, headers, timeout):
+        captured.update(url=url, params=params, headers=headers, timeout=timeout)
         return FakeResponse({"data": []})
 
     monkeypatch.setattr(requests, "get", fake_get)
@@ -58,14 +62,17 @@ def test_runtime_api_settings_are_used(monkeypatch):
 
     assert captured["url"] == "https://example.test/v9/search"
     assert captured["params"]["limit"] == 7
+    assert captured["params"]["search_mode"] == "KEYWORD"
+    assert "access_token" not in captured["params"]
+    assert captured["headers"]["Authorization"] == "Bearer token"
     assert captured["timeout"] == 12
 
 
 def test_keyword_search_uses_only_supported_public_fields(monkeypatch):
     captured = {}
 
-    def fake_get(url, params, timeout):
-        captured.update(url=url, params=params, timeout=timeout)
+    def fake_get(url, params, headers, timeout):
+        captured.update(url=url, params=params, headers=headers, timeout=timeout)
         return FakeResponse({"data": []})
 
     monkeypatch.setattr(requests, "get", fake_get)
@@ -79,3 +86,37 @@ def test_keyword_search_uses_only_supported_public_fields(monkeypatch):
     assert requested_fields == {"id", "username", "text", "timestamp", "permalink"}
     assert "like_count" not in requested_fields
     assert "views" not in requested_fields
+
+
+def test_validate_token_uses_me_endpoint_and_normalizes_bearer(monkeypatch):
+    captured = {}
+
+    def fake_get(url, params, headers, timeout):
+        captured.update(url=url, params=params, headers=headers, timeout=timeout)
+        return FakeResponse({"id": "123", "username": "avicenna"})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    collector = ThreadsOfficialCollector(
+        token='  "Bearer token-value"  ',
+        base_url="https://graph.threads.net/v1.0",
+    )
+
+    assert collector.validate_token()["username"] == "avicenna"
+    assert captured["url"] == "https://graph.threads.net/v1.0/me"
+    assert captured["headers"]["Authorization"] == "Bearer token-value"
+
+
+def test_non_json_server_error_is_actionable_and_retried(monkeypatch):
+    calls = []
+
+    def fake_get(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeResponse(ValueError("not json"), status_code=500, text="")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr("collectors.threads_collector.time.sleep", lambda *_: None)
+
+    with pytest.raises(CollectorError, match="Meta Threads API HTTP 500"):
+        ThreadsOfficialCollector("token").collect(request())
+
+    assert len(calls) == 2

@@ -1,8 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urlparse, urlunparse
 
 from config.settings import settings
+
+
+def normalize_threads_base_url(value: str) -> str:
+    """Return a stable Threads Graph API base URL.
+
+    Meta accepts an unversioned host in some examples, but production requests
+    are more predictable when the API version is explicit. Custom compatible
+    API hosts are left untouched.
+    """
+    normalized = value.strip().rstrip("/")
+    parsed = urlparse(normalized)
+    if parsed.scheme == "https" and parsed.netloc.lower() == "graph.threads.net":
+        path = parsed.path.rstrip("/")
+        if not path:
+            path = "/v1.0"
+        normalized = urlunparse(parsed._replace(path=path))
+    return normalized
 
 
 def _bounded_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -44,7 +62,7 @@ class RuntimeConfig:
             ).strip(),
             threads_api_base_url=values.get(
                 "threads_api_base_url", defaults.threads_api_base_url
-            ).strip().rstrip("/"),
+            ),
             threads_search_endpoint=values.get(
                 "threads_search_endpoint", defaults.threads_search_endpoint
             ).strip(),
@@ -62,6 +80,13 @@ class RuntimeConfig:
                 values.get("default_search_type", "RECENT").strip().upper()
                 or "RECENT"
             ),
+        )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "threads_api_base_url",
+            normalize_threads_base_url(self.threads_api_base_url),
         )
 
     @property

@@ -21,7 +21,11 @@ from analytics.product_analytics import (
 from analytics.filters import filter_posts
 from collectors.base_collector import CollectionRequest, CollectorError
 from collectors.threads_collector import ThreadsOfficialCollector
-from config.runtime_config import RuntimeConfig, SECRET_SETTING_KEYS
+from config.runtime_config import (
+    RuntimeConfig,
+    SECRET_SETTING_KEYS,
+    normalize_threads_base_url,
+)
 from config.settings import ROOT, settings
 from data.demo_data import generate_demo_posts
 from database.db import Database
@@ -425,7 +429,7 @@ def api_configuration_page(runtime: RuntimeConfig) -> None:
         saved = st.form_submit_button("Save API configuration", type="primary")
 
     if saved:
-        normalized_url = base_url.strip().rstrip("/")
+        normalized_url = normalize_threads_base_url(base_url)
         parsed_url = urlparse(normalized_url)
         normalized_endpoint = endpoint.strip()
         if normalized_endpoint and not normalized_endpoint.startswith("/"):
@@ -468,13 +472,19 @@ def api_configuration_page(runtime: RuntimeConfig) -> None:
         else:
             today = date.today()
             try:
-                rows = build_threads_collector(latest).collect(
+                collector = build_threads_collector(latest)
+                identity = collector.validate_token()
+                rows = collector.collect(
                     CollectionRequest(
-                        test_keyword.strip(), today - timedelta(days=1), today,
-                        latest.default_search_type, 1, latest.default_language,
+                        test_keyword.strip(), today - timedelta(days=7), today,
+                        latest.default_search_type, 10, latest.default_language,
                     )
                 )
-                st.success(f"Threads API berhasil diakses. Respons berisi {len(rows)} post.")
+                username = identity.get("username") or identity.get("id") or "unknown"
+                st.success(
+                    f"Token valid untuk @{username}. Keyword Search berhasil dan "
+                    f"mengembalikan {len(rows)} post pada window pengujian."
+                )
             except CollectorError as exc:
                 st.error(str(exc))
 
