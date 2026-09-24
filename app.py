@@ -12,11 +12,12 @@ import plotly.express as px
 import streamlit as st
 import extra_streamlit_components as stx
 
+from auth.password_auth import hash_password, verify_password
 from auth.session_auth import (
     COOKIE_MAX_AGE_SECONDS,
     COOKIE_NAME,
     create_session_token,
-    validate_session_token,
+    get_session_username,
 )
 from analytics.product_analytics import (
     category_ranking,
@@ -54,7 +55,7 @@ st.set_page_config(
 
 cookie_manager = stx.CookieManager(key="threads_radar_cookie_manager")
 
-MENU = [
+BASE_MENU = [
     "Overview", "Product Ranking", "Top Threads", "Product Categories",
     "Winning Hooks", "Buying Intent", "Creators", "Keywords", "Dataset", "Settings",
     "API Configuration",
@@ -94,20 +95,45 @@ def inject_styles() -> None:
     )
 
 
+def _set_authenticated_user(user: dict) -> None:
+    st.session_state.authenticated = True
+    st.session_state.current_user = str(user["username"])
+    st.session_state.user_role = str(user["role"]).upper()
+    st.session_state.display_name = user.get("display_name") or user["username"]
+
+
 def authenticate() -> bool:
     if not settings.username and not settings.password and not settings.is_production:
+        st.session_state.authenticated = True
+        st.session_state.current_user = "development"
+        st.session_state.user_role = "SUPERADMIN"
+        st.session_state.display_name = "Development"
         return True
+
     if settings.is_production and (not settings.username or not settings.password):
         st.error("Login production belum dikonfigurasi. Set APP_USERNAME dan APP_PASSWORD.")
         st.stop()
 
-    if st.session_state.get("authenticated"):
-        return True
+    db = get_database("LIVE")
+
+    if (
+        st.session_state.get("authenticated")
+        and st.session_state.get("current_user")
+        and st.session_state.get("user_role")
+    ):
+        user = db.get_user(str(st.session_state.current_user))
+        if user and bool(user["active"]):
+            _set_authenticated_user(user)
+            return True
+        st.session_state.authenticated = False
 
     saved_cookie = st.context.cookies.get(COOKIE_NAME)
-    if validate_session_token(saved_cookie, settings.username, settings.password):
-        st.session_state.authenticated = True
-        return True
+    cookie_username = get_session_username(saved_cookie, settings.password)
+    if cookie_username:
+        user = db.get_user(cookie_username)
+        if user and bool(user["active"]):
+            _set_authenticated_user(user)
+            return True
 
     left, center, right = st.columns([1, 1.15, 1])
     with center:
@@ -120,13 +146,15 @@ def authenticate() -> bool:
             password = st.text_input("Password", type="password", autocomplete="current-password")
             submitted = st.form_submit_button("Masuk", type="primary", width="stretch")
         if submitted:
-            valid_user = hmac.compare_digest(username, settings.username)
-            valid_password = hmac.compare_digest(
-                hashlib.sha256(password.encode()).digest(),
-                hashlib.sha256(settings.password.encode()).digest(),
+            user = db.get_user(username)
+            valid = (
+                user is not None
+                and bool(user["active"])
+                and verify_password(password, str(user["password_hash"]))
             )
-            if valid_user and valid_password:
-                token = create_session_token(settings.username, settings.password)
+            if valid:
+                db.mark_user_login(str(user["username"]))
+                token = create_session_token(str(user["username"]), settings.password)
                 cookie_manager.set(
                     COOKIE_NAME,
                     token,
@@ -136,9 +164,9 @@ def authenticate() -> bool:
                     secure=settings.is_production,
                     same_site="strict",
                 )
-                st.session_state.authenticated = True
+                _set_authenticated_user(user)
                 st.rerun()
-            st.error("Username atau password tidak sesuai.")
+            st.error("Username/password tidak sesuai atau akun nonaktif.")
     return False
 
 
@@ -150,6 +178,12 @@ def get_database(mode: str) -> Database:
     if mode == "LIVE":
         legacy = RuntimeConfig.legacy_defaults()
         db.seed_app_settings(legacy.as_storage(), SECRET_SETTING_KEYS)
+        if settings.username and settings.password:
+            db.ensure_superadmin(
+                settings.username,
+                hash_password(settings.password),
+                display_name="Superadmin",
+            )
     if mode == "DEMO" and db.count_posts() == 0:
         db.insert_posts(process_posts(generate_demo_posts()))
     return db
@@ -429,6 +463,113 @@ def dataset_page(df: pd.DataFrame, demo: bool) -> None:
     c1, c2, _ = st.columns([1, 1, 3])
     c1.download_button("Download CSV", csv, "threads_product_radar.csv", "text/csv", width="stretch")
     c2.download_button("Download Excel", excel, "threads_product_radar.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
+
+
+
+def user_management_page() -> None:
+    if st.session_state.get("user_role") != "SUPERADMIN":
+        st.error("Menu ini hanya tersedia untuk superadmin.")
+        return
+
+    page_header(
+        "User Management",
+        "Superadmin dapat menambah dan mengelola akun. User biasa tetap mendapat akses penuh ke seluruh fitur market-research.",
+        False,
+    )
+    db = get_database("LIVE")
+
+    st.subheader("Tambah user")
+    with st.form("create_user_form"):
+        c1, c2 = st.columns(2)
+        username = c1.text_input("Username", placeholder="contoh: analyst01")
+        display_name = c2.text_input("Display name", placeholder="Nama user")
+        password = st.text_input("Password", type="password")
+        confirm = st.text_input("Konfirmasi password", type="password")
+        create = st.form_submit_button("Create user", type="primary")
+
+    if create:
+        errors = []
+        cleaned_username = username.strip()
+        if len(cleaned_username) < 3:
+            errors.append("Username minimal 3 karakter.")
+        if not cleaned_username.replace("_", "").replace("-", "").isalnum():
+            errors.append("Username hanya boleh huruf, angka, underscore, atau dash.")
+        if len(password) < 10:
+            errors.append("Password minimal 10 karakter.")
+        if password != confirm:
+            errors.append("Konfirmasi password tidak sama.")
+        if db.get_user(cleaned_username):
+            errors.append("Username sudah digunakan.")
+
+        if errors:
+            for error in errors:
+                st.error(error)
+        else:
+            db.create_user(
+                cleaned_username,
+                hash_password(password),
+                display_name=display_name.strip() or None,
+                role="USER",
+            )
+            st.success(f"User @{cleaned_username} berhasil dibuat dengan akses penuh.")
+            st.rerun()
+
+    users = db.list_users()
+    st.subheader("Daftar user")
+    if users:
+        user_frame = pd.DataFrame(users)
+        user_frame["active"] = user_frame["active"].astype(bool)
+        st.dataframe(
+            user_frame[
+                [
+                    "username", "display_name", "role", "active",
+                    "created_at", "last_login_at",
+                ]
+            ],
+            hide_index=True,
+            width="stretch",
+        )
+
+    regular_users = [user for user in users if user["role"] != "SUPERADMIN"]
+    if regular_users:
+        st.subheader("Kelola user")
+        selected_username = st.selectbox(
+            "User",
+            [str(user["username"]) for user in regular_users],
+        )
+        selected = next(
+            user for user in regular_users if user["username"] == selected_username
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            desired_active = st.toggle(
+                "Account active",
+                value=bool(selected["active"]),
+                key=f"active_{selected_username}",
+            )
+            if st.button("Save account status", width="stretch"):
+                db.set_user_active(selected_username, desired_active)
+                st.success("Status akun diperbarui.")
+                st.rerun()
+        with c2:
+            with st.form("reset_user_password_form"):
+                new_password = st.text_input(
+                    "Reset password",
+                    type="password",
+                    key=f"reset_{selected_username}",
+                )
+                reset = st.form_submit_button("Reset password", width="stretch")
+            if reset:
+                if len(new_password) < 10:
+                    st.error("Password baru minimal 10 karakter.")
+                else:
+                    db.reset_user_password(
+                        selected_username,
+                        hash_password(new_password),
+                    )
+                    st.success("Password user berhasil direset.")
+    else:
+        st.info("Belum ada user biasa. Tambahkan user melalui form di atas.")
 
 
 def build_threads_collector(runtime: RuntimeConfig) -> ThreadsOfficialCollector:
@@ -752,10 +893,18 @@ with st.sidebar:
         key="data_source_mode",
         help="LIVE memakai database persisten. DEMO hanya untuk data simulasi.",
     )
-    menu = st.radio("Navigation", MENU, label_visibility="collapsed")
+    menu_options = list(BASE_MENU)
+    if st.session_state.get("user_role") == "SUPERADMIN":
+        menu_options.append("User Management")
+    menu = st.radio("Navigation", menu_options, label_visibility="collapsed")
+    st.caption(
+        f"Signed in as **{st.session_state.get('display_name', st.session_state.get('current_user', 'user'))}**"
+        + (" · Superadmin" if st.session_state.get("user_role") == "SUPERADMIN" else "")
+    )
     if st.session_state.get("authenticated") and st.button("Log out", width="stretch"):
         cookie_manager.delete(COOKIE_NAME, key="delete_threads_radar_auth")
-        st.session_state.authenticated = False
+        for key in ("authenticated", "current_user", "user_role", "display_name"):
+            st.session_state.pop(key, None)
         st.rerun()
 
 db = get_database(mode)
@@ -763,7 +912,7 @@ live_db = get_database("LIVE")
 runtime = RuntimeConfig.from_mapping(live_db.get_app_settings())
 cache_key = str(db.status().get("last_collection") or db.count_posts())
 data = load_scored_data(mode, cache_key)
-filtered = apply_filters(data, runtime.default_date_days) if menu not in {"Settings", "API Configuration"} else data
+filtered = apply_filters(data, runtime.default_date_days) if menu not in {"Settings", "API Configuration", "User Management"} else data
 demo = mode == "DEMO"
 
 pages = {
@@ -781,5 +930,7 @@ if menu == "Settings":
     settings_page(mode, demo, runtime)
 elif menu == "API Configuration":
     api_configuration_page(runtime)
+elif menu == "User Management":
+    user_management_page()
 else:
     pages[menu](filtered, demo)
