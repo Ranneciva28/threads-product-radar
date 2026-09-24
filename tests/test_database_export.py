@@ -40,3 +40,26 @@ def test_excel_export_has_content():
     payload = build_excel(frame)
     assert payload[:2] == b"PK"
     assert len(payload) > 5000
+
+
+def test_existing_database_is_migrated_with_market_research_columns(tmp_path: Path):
+    import sqlite3
+
+    path = tmp_path / "legacy.db"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, post_id TEXT UNIQUE, post_text TEXT NOT NULL)"
+    )
+    connection.commit()
+    connection.close()
+
+    db = Database(path)
+    db.initialize()
+    with db.connect() as connection:
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(posts)").fetchall()
+        }
+
+    assert "intent_type" in columns
+    assert "engagement_available" in columns
+    assert "has_replies" in columns
