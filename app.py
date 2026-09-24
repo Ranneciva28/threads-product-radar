@@ -10,7 +10,14 @@ from urllib.parse import urlparse
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import extra_streamlit_components as stx
 
+from auth.session_auth import (
+    COOKIE_MAX_AGE_SECONDS,
+    COOKIE_NAME,
+    create_session_token,
+    validate_session_token,
+)
 from analytics.product_analytics import (
     category_ranking,
     creator_analytics,
@@ -44,6 +51,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+cookie_manager = stx.CookieManager(key="threads_radar_cookie_manager")
 
 MENU = [
     "Overview", "Product Ranking", "Top Threads", "Product Categories",
@@ -91,7 +100,13 @@ def authenticate() -> bool:
     if settings.is_production and (not settings.username or not settings.password):
         st.error("Login production belum dikonfigurasi. Set APP_USERNAME dan APP_PASSWORD.")
         st.stop()
+
     if st.session_state.get("authenticated"):
+        return True
+
+    saved_cookie = st.context.cookies.get(COOKIE_NAME)
+    if validate_session_token(saved_cookie, settings.username, settings.password):
+        st.session_state.authenticated = True
         return True
 
     left, center, right = st.columns([1, 1.15, 1])
@@ -99,7 +114,7 @@ def authenticate() -> bool:
         st.markdown("<div style='height:11vh'></div>", unsafe_allow_html=True)
         st.markdown("<div class='eyebrow'>Internal intelligence tool</div>", unsafe_allow_html=True)
         st.markdown("<div class='page-title'>Threads Product Radar</div>", unsafe_allow_html=True)
-        st.caption("Masuk untuk membuka dashboard riset produk digital.")
+        st.caption("Masuk sekali; sesi browser akan diingat sampai 30 hari atau sampai Log out.")
         with st.form("login_form"):
             username = st.text_input("Username", autocomplete="username")
             password = st.text_input("Password", type="password", autocomplete="current-password")
@@ -111,6 +126,16 @@ def authenticate() -> bool:
                 hashlib.sha256(settings.password.encode()).digest(),
             )
             if valid_user and valid_password:
+                token = create_session_token(settings.username, settings.password)
+                cookie_manager.set(
+                    COOKIE_NAME,
+                    token,
+                    key="set_threads_radar_auth",
+                    path="/",
+                    max_age=COOKIE_MAX_AGE_SECONDS,
+                    secure=settings.is_production,
+                    same_site="strict",
+                )
                 st.session_state.authenticated = True
                 st.rerun()
             st.error("Username atau password tidak sesuai.")
@@ -428,7 +453,15 @@ def api_configuration_page(runtime: RuntimeConfig) -> None:
     c2.metric("Token", "Saved securely" if runtime.api_configured else "Not set")
     c3.metric("Max posts / run", runtime.max_posts)
     c4.metric("Request timeout", f"{runtime.request_timeout_seconds}s")
-    st.caption("Secret disimpan di SQLite server dan tidak pernah ditampilkan kembali di browser atau log.")
+    token_fingerprint = (
+        hashlib.sha256(runtime.threads_access_token.encode()).hexdigest()[:10]
+        if runtime.threads_access_token else "—"
+    )
+    st.caption(
+        "Access token disimpan persisten di database LIVE. Field token sengaja selalu "
+        "kosong setelah Save agar secret tidak dikirim kembali ke browser. "
+        f"Status: {'saved' if runtime.api_configured else 'not set'} · fingerprint: {token_fingerprint}"
+    )
 
     st.subheader("Connection & collection defaults")
     with st.form("api_configuration_form"):
@@ -721,6 +754,7 @@ with st.sidebar:
     )
     menu = st.radio("Navigation", MENU, label_visibility="collapsed")
     if st.session_state.get("authenticated") and st.button("Log out", width="stretch"):
+        cookie_manager.delete(COOKIE_NAME, key="delete_threads_radar_auth")
         st.session_state.authenticated = False
         st.rerun()
 
