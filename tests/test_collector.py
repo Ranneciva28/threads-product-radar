@@ -120,3 +120,26 @@ def test_non_json_server_error_is_actionable_and_retried(monkeypatch):
         ThreadsOfficialCollector("token").collect(request())
 
     assert len(calls) == 2
+
+
+def test_versioned_500_falls_back_to_unversioned_host(monkeypatch):
+    calls = []
+
+    def fake_get(url, params, headers, timeout):
+        calls.append(url)
+        if "/v1.0/" in url:
+            return FakeResponse(ValueError("not json"), status_code=500, text="")
+        return FakeResponse({"id": "123", "username": "avicenna"})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr("collectors.threads_collector.time.sleep", lambda *_: None)
+
+    collector = ThreadsOfficialCollector(
+        token="token",
+        base_url="https://graph.threads.net/v1.0",
+    )
+    identity = collector.validate_token()
+
+    assert identity["username"] == "avicenna"
+    assert calls[-1] == "https://graph.threads.net/me"
+    assert collector.last_success_base_url == "https://graph.threads.net"
