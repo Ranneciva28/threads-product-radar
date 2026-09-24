@@ -23,8 +23,15 @@ def category_ranking(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
     work = df.copy()
     work["buying_intent_count"] = pd.to_numeric(work.get("buying_intent_count"), errors="coerce")
+    demand_types = {
+        "PURCHASE_INTENT", "PRODUCT_SEARCH", "RECOMMENDATION_REQUEST", "CONSIDERATION"
+    }
+    work["demand_intent_post"] = work.get(
+        "intent_type", pd.Series("NO_CLEAR_INTENT", index=work.index)
+    ).isin(demand_types).astype(int)
     ranking = work.groupby("product_category", dropna=False).agg(
         post_count=("post_id", "count"),
+        demand_intent_posts=("demand_intent_post", "sum"),
         total_engagement=("total_engagement", "sum"),
         average_engagement=("total_engagement", "mean"),
         median_engagement=("total_engagement", "median"),
@@ -43,8 +50,15 @@ def category_ranking(df: pd.DataFrame) -> pd.DataFrame:
 def keyword_analytics(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
-    out = df.groupby("keyword_source", dropna=False).agg(
+    work = df.copy()
+    work["demand_intent_post"] = work.get(
+        "intent_type", pd.Series("NO_CLEAR_INTENT", index=work.index)
+    ).isin({
+        "PURCHASE_INTENT", "PRODUCT_SEARCH", "RECOMMENDATION_REQUEST", "CONSIDERATION"
+    }).astype(int)
+    out = work.groupby("keyword_source", dropna=False).agg(
         post_count=("post_id", "count"),
+        demand_intent_posts=("demand_intent_post", "sum"),
         total_engagement=("total_engagement", "sum"),
         average_engagement=("total_engagement", "mean"),
         opportunity_score=("opportunity_score", "mean"),
