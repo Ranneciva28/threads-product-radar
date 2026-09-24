@@ -194,7 +194,6 @@ class ThreadsOfficialCollector(BaseCollector):
         params = {
             "q": request.keyword,
             "search_type": request.search_type.upper(),
-            "search_mode": "KEYWORD",
             "limit": min(max(request.limit, 1), self.max_posts),
             "fields": ",".join(self.FIELD_MAP),
         }
