@@ -70,3 +70,38 @@ def test_existing_database_is_migrated_with_market_research_columns(tmp_path: Pa
     assert "intent_type" in columns
     assert "engagement_available" in columns
     assert "has_replies" in columns
+
+
+def test_superadmin_and_managed_user_lifecycle(tmp_path: Path):
+    from auth.password_auth import hash_password, verify_password
+
+    db = Database(tmp_path / "users.db")
+    db.initialize()
+
+    admin_hash = hash_password("super-secret-password")
+    db.ensure_superadmin("owner", admin_hash, "Owner")
+    admin = db.get_user("OWNER")
+    assert admin is not None
+    assert admin["role"] == "SUPERADMIN"
+    assert admin["active"] == 1
+    assert verify_password("super-secret-password", admin["password_hash"])
+
+    user_hash = hash_password("analyst-password")
+    db.create_user("analyst01", user_hash, "Analyst")
+    user = db.get_user("ANALYST01")
+    assert user is not None
+    assert user["role"] == "USER"
+    assert user["active"] == 1
+
+    db.set_user_active("analyst01", False)
+    assert db.get_user("analyst01")["active"] == 0
+
+    new_hash = hash_password("new-analyst-password")
+    db.reset_user_password("analyst01", new_hash)
+    assert verify_password(
+        "new-analyst-password",
+        db.get_user("analyst01")["password_hash"],
+    )
+
+    db.set_user_active("owner", False)
+    assert db.get_user("owner")["active"] == 1
