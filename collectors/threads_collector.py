@@ -161,7 +161,7 @@ class ThreadsOfficialCollector(BaseCollector):
             url = f"{base}{path}"
             attempted.append(url)
             try:
-                payload = self._get_json_path(self.search_endpoint, params)
+                payload = self._get_json(url, params)
                 self.last_success_base_url = base
                 return payload
             except CollectorError as exc:
