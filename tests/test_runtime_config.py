@@ -12,7 +12,7 @@ def test_runtime_config_round_trip(tmp_path):
         max_posts=500,
         default_date_days=14,
         request_timeout_seconds=45,
-        default_language="id",
+        default_language="",
         default_search_type="TOP",
     )
 
@@ -45,3 +45,8 @@ def test_runtime_config_bounds_invalid_values():
     assert config.max_posts == 1000
     assert config.default_date_days >= 1
     assert config.request_timeout_seconds == 5
+
+
+def test_runtime_config_allows_blank_language():
+    config = RuntimeConfig.from_mapping({"default_language": "   "})
+    assert config.default_language == ""
