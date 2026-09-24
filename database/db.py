@@ -15,11 +15,29 @@ from database.schema import SCHEMA_SQL
 POST_COLUMNS = [
     "post_id", "username", "display_name", "post_text", "post_text_normalized",
     "created_at", "permalink", "like_count", "reply_count", "repost_count",
-    "quote_count", "views", "keyword_source", "search_type", "language",
+    "quote_count", "views", "engagement_available", "media_type", "shortcode",
+    "is_quote_post", "has_replies", "topic_tag", "is_verified",
+    "profile_picture_url", "keyword_source", "search_type", "language",
     "crawl_timestamp", "data_source", "is_digital_product", "product_category",
-    "product_subcategory", "classification_confidence", "buying_intent_count",
+    "product_subcategory", "classification_confidence", "intent_type",
+    "intent_score", "intent_source", "intent_signals", "buying_intent_count",
     "buying_intent_score", "buying_intent_status", "buying_intent_examples",
 ]
+
+POST_MIGRATION_COLUMNS = {
+    "engagement_available": "INTEGER",
+    "media_type": "TEXT",
+    "shortcode": "TEXT",
+    "is_quote_post": "INTEGER",
+    "has_replies": "INTEGER",
+    "topic_tag": "TEXT",
+    "is_verified": "INTEGER",
+    "profile_picture_url": "TEXT",
+    "intent_type": "TEXT",
+    "intent_score": "REAL",
+    "intent_source": "TEXT",
+    "intent_signals": "TEXT",
+}
 
 
 class Database:
@@ -43,6 +61,16 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(SCHEMA_SQL)
+            existing = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(posts)").fetchall()
+            }
+            for column, ddl in POST_MIGRATION_COLUMNS.items():
+                if column not in existing:
+                    connection.execute(f"ALTER TABLE posts ADD COLUMN {column} {ddl}")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_posts_intent_type ON posts(intent_type)"
+            )
         try:
             self.path.chmod(0o600)
         except OSError:
@@ -51,7 +79,6 @@ class Database:
     def seed_app_settings(
         self, values: dict[str, str], secret_keys: set[str] | None = None
     ) -> None:
-        """Insert defaults without overwriting values already saved from the UI."""
         secret_keys = secret_keys or set()
         with self.connect() as connection:
             connection.executemany(
