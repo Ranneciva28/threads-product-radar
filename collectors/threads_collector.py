@@ -55,6 +55,7 @@ class ThreadsOfficialCollector(BaseCollector):
         self.search_endpoint = search_endpoint or settings.threads_search_endpoint
         self.max_posts = max_posts or settings.max_posts
         self.timeout_seconds = timeout_seconds
+        self.last_success_base_url: str | None = None
 
     @staticmethod
     def _normalize_token(token: str) -> str:
@@ -137,12 +138,50 @@ class ThreadsOfficialCollector(BaseCollector):
             )
         return payload
 
+    def _base_candidates(self) -> list[str]:
+        """Try both documented Threads host styles when Meta returns a 5xx.
+
+        Meta examples currently use both the bare graph.threads.net host and
+        versioned /v1.0 paths. A server-side 5xx with an empty body gives us no
+        useful diagnosis, so retry the alternate form before surfacing failure.
+        """
+        candidates = [self.base_url]
+        bare = "https://graph.threads.net"
+        versioned = f"{bare}/v1.0"
+        if self.base_url == versioned:
+            candidates.append(bare)
+        elif self.base_url == bare:
+            candidates.append(versioned)
+        return candidates
+
+    def _get_json_path(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
+        last_error: CollectorError | None = None
+        attempted: list[str] = []
+        for index, base in enumerate(self._base_candidates()):
+            url = f"{base}{path}"
+            attempted.append(url)
+            try:
+                payload = self._get_json_path(self.search_endpoint, params)
+                self.last_success_base_url = base
+                return payload
+            except CollectorError as exc:
+                last_error = exc
+                message = str(exc)
+                # Only route/version fallback for opaque server-side errors.
+                if index == 0 and any(f"HTTP {code}" in message for code in self.RETRYABLE_STATUS_CODES):
+                    continue
+                raise
+        detail = str(last_error) if last_error else "unknown error"
+        raise CollectorError(
+            f"{detail} | Endpoint dicoba: {' -> '.join(attempted)}"
+        )
+
     def validate_token(self) -> dict[str, Any]:
         """Validate that the saved credential is a Threads user access token."""
         if not self.token:
             raise CollectorError("Threads access token belum dikonfigurasi.")
-        return self._get_json(
-            f"{self.base_url}/me",
+        return self._get_json_path(
+            "/me",
             {"fields": "id,username"},
         )
 
@@ -152,7 +191,6 @@ class ThreadsOfficialCollector(BaseCollector):
         if request.start_date > request.end_date:
             raise CollectorError("Start date tidak boleh melewati end date.")
 
-        url = f"{self.base_url}{self.search_endpoint}"
         params = {
             "q": request.keyword,
             "search_type": request.search_type.upper(),
